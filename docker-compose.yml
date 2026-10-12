@@ -1,0 +1,76 @@
+name: zcare                   # fixed project name: same container/volume whatever the folder is called
+
+services:
+  zcare:
+    build:
+      context: .
+      args:
+        # Override in .env if the server can't reach Docker Hub / PyPI quickly.
+        BASE_IMAGE: ${BASE_IMAGE:-m.daocloud.io/docker.io/library/python:3.13-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+    image: zcare:latest
+    container_name: zcare
+    env_file: .env            # all app settings; .env itself is NOT baked into the image
+    environment:
+      TZ: Asia/Shanghai       # log timestamps; job schedules use TIMEZONE from .env
+      STATE_FILE: /app/data/state.json
+    ports:
+      # Behind a reverse proxy (nginx/Caddy terminating HTTPS for the WeCom callback),
+      # change to "127.0.0.1:8000:8000" so the app isn't reachable directly.
+      - "8000:8000"
+    volumes:
+      - zcare-data:/app/data  # keeps recommendation history across restarts/rebuilds
+    restart: unless-stopped
+    init: true                # forwards SIGTERM so the scheduler shuts down cleanly
+    stop_grace_period: 20s
+    # Do NOT scale this service: >1 replica = duplicate messages to your parents.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # WeChat Official Account articles → JSON feeds for zcare (github.com/rachelos/we-mp-rss, MIT).
+  # Logs into YOUR 公众号 backend (QR scan); talks only to Tencent. Admin UI via SSH tunnel:
+  #   ssh -L 8001:127.0.0.1:8001 root@<server>  →  http://localhost:8001  (user: admin)
+  we-mp-rss:
+    # Nanjing University's mirror of ghcr.io (DaoCloud refuses this image: not on its allowlist).
+    # Alternative: WEMP_IMAGE=docker.1ms.run/rachelos/we-mp-rss:latest (mirror the we-mp-rss README suggests)
+    image: ${WEMP_IMAGE:-ghcr.nju.edu.cn/rachelos/we-mp-rss:latest}
+    container_name: we-mp-rss
+    environment:
+      DB: sqlite:///data/db.db
+      USERNAME: admin
+      PASSWORD: ${WEMP_ADMIN_PASSWORD:?set WEMP_ADMIN_PASSWORD in .env}
+      SECRET_KEY: ${WEMP_SECRET_KEY:?set WEMP_SECRET_KEY in .env}
+      SAFE_LIC_KEY: ${WEMP_LIC_KEY:?set WEMP_LIC_KEY in .env}
+      GATHER.CONTENT: "True"       # fetch full article text (default False)
+      RSS_FULL_CONTEXT: "True"
+      RSS_PAGE_SIZE: "100"         # caps ?limit= on the JSON feed
+      MAX_PAGE: "2"                # article-list pages per account per run — gentle on WeChat's rate limit
+      ARTICLE.TRUE_DELETE: "True"  # zcare's daily cleanup really removes old rows (default only marks them)
+      SPAN_INTERVAL: "30"          # seconds between accounts
+      REDIS_SERVER_HOST: 127.0.0.1 # its embedded Redis has no password: keep it on the container loopback
+      # On login expiry, start a new login and embed its QR in the alert (zcare sends it to you as an image)
+      SEND_CODE: "True"
+      WERSS_SEND_CODE: "True"
+      # Login-expiry alerts → zcare → your WeCom (token-protected; port 8000 is public)
+      CUSTOM_WEBHOOK: http://zcare:8000/wemp/notify?token=${WEMP_NOTIFY_TOKEN:?set WEMP_NOTIFY_TOKEN in .env}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:8001:8001"      # its /feed/*.json has no auth — never publish this port
+    # Server has 1.6 GiB RAM and no swap: cap we-mp-rss (it can launch a browser) so an out-of-memory
+    # kill hits it — it restarts — rather than zcare. Raise via WEMP_MEM_LIMIT if it keeps restarting.
+    mem_limit: ${WEMP_MEM_LIMIT:-800m}
+    volumes:
+      - wemp-data:/app/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  zcare-data:
+  wemp-data:

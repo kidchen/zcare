@@ -1,0 +1,16 @@
+.env
+.venv/
+.git/
+.claude/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+data/
+tests/
+requirements-dev.txt
+pytest.ini
+zcare_plan.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+deploy.sh
