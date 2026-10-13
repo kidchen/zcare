@@ -123,9 +123,8 @@ Privacy: parents' messages (and their display names) are sent to the LLM provide
 
 Every day at `DIGEST_CRON` (default 19:30, after Friday's 19:00 drama message) both parents get up to
 `DIGEST_MAX_ITEMS` (default 5) local news items from the subscribed accounts — no topic/source filter, just
-ranking. It arrives as **one card** listing the headlines; tapping it opens a large-font page with every summary
-and a 「阅读原文」 button to the **original** WeChat article. (Without `PUBLIC_BASE_URL` detail pages are off and
-it falls back to one card per item, each opening the original.)
+ranking. It's one WeCom `news` message (a single bubble, like a 公众号 multi-article push) with one row per item;
+tapping a row opens the **original** WeChat article directly.
 
 1. Candidates: today's/yesterday's articles not already sent. The same story from several accounts is grouped by
    title similarity (titles with different numbers are kept apart), and stories already told are skipped too.

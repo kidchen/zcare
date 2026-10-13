@@ -172,10 +172,7 @@ def build_digest(sv: Services, record: bool, name: str = "爸爸妈妈", greetin
         return None
     if record:
         builder.remember(items)
-    message = format_digest_message(items, name=name, greeting=greeting)
-    page = sv.details.publish_page(message.title, message.markdown) if sv.details is not None else None
-    # one card → the page with all items (each with 阅读原文); no public page configured → one card per item
-    return format_digest_message(items, name=name, greeting=greeting, page_url=page) if page else message
+    return format_digest_message(items, name=name, greeting=greeting)
 
 
 def _parents(s: Settings) -> list[str]:

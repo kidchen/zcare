@@ -206,10 +206,10 @@ class DigestBuilder:
         self._state.remember(TITLES_KEY, [i.source_title for i in items], keep=KEEP_SENT)
 
 
-def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", greeting: str = "晚上好",
-                          page_url: str | None = None) -> Message:
-    """With ``page_url`` (a detail page holding the full digest): ONE card listing the headlines; the page
-    shows every summary with a 阅读原文 button to the original article. Without it: one card per item."""
+def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", greeting: str = "晚上好") -> Message:
+    """One WeCom ``news`` message with one row per item (shown as a single bubble, like a 公众号
+    multi-article push); each row opens the ORIGINAL article directly. Text/markdown modes get the
+    summaries with 阅读原文 links."""
     lines = [f"**{name}{greeting} 📰 今天呼和浩特的新鲜事**", ""]
     for n, it in enumerate(items, start=1):
         src = f"（来源：{it.account}）" if it.account else ""
@@ -218,13 +218,8 @@ def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", g
             lines.append(f"[阅读原文]({it.url})")
         lines.append("")
     lines.append("点开就能看原文，看累了就歇歇眼睛～")
-    markdown = "\n".join(lines).strip()
-    title = f"📰 今天呼和浩特的新鲜事（{len(items)}条）"
-    if page_url:
-        desc = "\n".join(f"{n}. {it.title}" for n, it in enumerate(items, start=1)) + "\n👉 点开看详情和原文"
-        cards: tuple[Card, ...] = (Card(title=title, description=desc, url=page_url),)
-        return Message(title=title, markdown=markdown, url=page_url, articles=cards)
     cards = tuple(Card(title=f"{n}. {it.title}", description=f"{it.summary}\n来源：{it.account}" if it.account
                        else it.summary, url=it.url)
                   for n, it in enumerate(items, start=1) if it.url.startswith("http"))
-    return Message(title=title, markdown=markdown, url=items[0].url or None, articles=cards)
+    return Message(title=f"📰 今天呼和浩特的新鲜事（{len(items)}条）", markdown="\n".join(lines).strip(),
+                   url=items[0].url or None, articles=cards)

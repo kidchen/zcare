@@ -79,16 +79,6 @@ def test_at_most_max_items_and_no_repeats_after_sending(state):
     assert not {i.key for i in first} & {i.key for i in second}
 
 
-def test_single_card_opens_page_listing_every_item():
-    items = [dg.DigestItem(f"新闻标题{n}", f"摘要{n}。", f"https://mp.weixin.qq.com/s/{n}", "新闻天天看", str(n))
-             for n in range(1, 6)]
-    msg = dg.format_digest_message(items, page_url="http://srv/detail/x")
-    (card,) = msg.articles
-    assert card.url == "http://srv/detail/x" and "（5条）" in card.title
-    assert all(f"{n}. 新闻标题{n}" in card.description for n in range(1, 6))
-    assert all(f"[阅读原文](https://mp.weixin.qq.com/s/{n})" in msg.markdown for n in range(1, 6))
-
-
 def test_message_cards_open_original_articles():
     items = [dg.DigestItem("地铁3号线年底开通", "地铁3号线12月28日开通。", "https://mp.weixin.qq.com/s/abc", "新闻天天看", "k")]
     msg = dg.format_digest_message(items)
@@ -126,7 +116,7 @@ def test_digest_job_sends_to_both_parents_and_skips_empty_days(monkeypatch, sett
     sv = main.Services(s, object(), None, state, events=Feed(ARTICLES))
     sv.now = lambda: datetime(2026, 10, 13, 19, 30)
     msg = main.build_digest(sv, record=True)
-    assert msg is not None and len(msg.articles) == 4 and "今天呼和浩特的新鲜事" in msg.markdown  # no page → per item
+    assert msg is not None and len(msg.articles) == 4 and "今天呼和浩特的新鲜事" in msg.markdown
     assert main.build_digest(sv, record=True) is None  # everything already sent → skip, no empty message
     assert main.build_digest(main.Services(s, object(), None, state, events=Feed([])), record=True) is None
 
@@ -139,21 +129,24 @@ def test_digest_scheduled_at_1930_and_can_be_turned_off(settings):
     assert "digest" not in off
 
 
-def test_digest_job_sends_one_card_when_detail_pages_are_on(monkeypatch, tmp_path, settings, state):
+def test_digest_rows_open_original_articles_even_with_detail_pages_on(monkeypatch, tmp_path, settings, state):
     import main
-    from features.detail import DetailStore, render_page
+    from features.detail import DetailStore
 
     class Feed:
         def recent_articles(self):
             return ARTICLES
 
+    class Rec:
+        sent = []
+
+        def send_message(self, users, message, msg_type):
+            Rec.sent.append(message)
+
     monkeypatch.setattr(main, "get_llm", lambda: None)
-    details = DetailStore(tmp_path / "d", "http://srv")
-    sv = main.Services(settings, object(), None, state, events=Feed(), details=details)
+    sv = main.Services(settings, object(), Rec(), state, events=Feed(), details=DetailStore(tmp_path / "d", "http://srv"))
     sv.now = lambda: datetime(2026, 10, 13, 19, 30)
-    msg = main.build_digest(sv, record=True)
-    (card,) = msg.articles
-    assert card.url.startswith("http://srv/detail/") and card.description.count("\n") == 4  # 4 headlines + hint
-    page = details.load(card.url.rsplit("/", 1)[1])
-    html = render_page(page["title"], page["markdown"])
-    assert html.count('class="btn" href="https://mp.weixin.qq.com/') == 4
+    main.deliver(sv, ["dad"], main.build_digest(sv, record=True))
+    (msg,) = Rec.sent
+    assert len(msg.articles) == 4 and all(a.url.startswith("https://mp.weixin.qq.com/") for a in msg.articles)
+    assert not list((tmp_path / "d").glob("*"))  # no in-between page
