@@ -31,7 +31,7 @@ def test_health_is_minimal_for_strangers_detailed_with_token(client):
         assert c.get("/health").json() == {"status": "ok"}
         assert c.get("/health", headers={"X-Admin-Token": "wrong"}).json() == {"status": "ok"}
         detailed = c.get("/health", headers={"X-Admin-Token": "s3cret"}).json()
-        assert set(detailed["jobs"]) == {"commute", "outing", "tv"}
+        assert set(detailed["jobs"]) == {"commute", "outing", "tv", "digest"}
 
 
 def test_jobs_require_token_even_for_dry_run(client):

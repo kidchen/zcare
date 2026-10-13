@@ -112,6 +112,8 @@ class Settings:
     outing_cron: str
     tv_cron: str
     daily_report_cron: str  # admin activity report; empty = off
+    digest_cron: str  # evening local-news digest to both parents; empty = off
+    digest_max_items: int
 
     # --- Feature tuning ---
     commute_typical_minutes: int  # 0 = unknown; enables "slower than usual" hints
@@ -233,6 +235,8 @@ def load_settings() -> Settings:
         outing_cron=_env("OUTING_CRON", "0 9 * * *"),
         tv_cron=_env("TV_CRON", "0 19 * * fri"),
         daily_report_cron=_env("DAILY_REPORT_CRON", "0 21 * * *"),
+        digest_cron=_env("DIGEST_CRON", "30 19 * * *"),
+        digest_max_items=max(1, min(8, _env_int("DIGEST_MAX_ITEMS", 5))),
         commute_typical_minutes=_env_int("COMMUTE_TYPICAL_MINUTES", 0),
         outing_max_transfers=_env_int("OUTING_MAX_TRANSFERS", 1),
         outing_max_walk_m=_env_int("OUTING_MAX_WALK_METERS", 800),

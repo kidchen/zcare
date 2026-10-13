@@ -48,6 +48,7 @@ from features.activity import ActivityLog
 from features.commute import build_commute_message, build_offday_greeting
 from features.daytype import day_info
 from features.detail import DetailStore, render_page
+from features.digest import DigestBuilder, format_digest_message
 from features.events import EventFinder
 from features.outing import build_outing_message
 from features.report import build_daily_report
@@ -114,7 +115,7 @@ def role_of(s: Settings, userid: str) -> str:
     return "other"
 
 
-JOB_AUDIENCE = {"commute": "father", "outing": "mother", "tv": "father"}
+JOB_AUDIENCE = {"commute": "father", "outing": "mother", "tv": "father", "digest": "both"}
 
 
 def deliver(sv: Services, recipients: list[str], message: Message) -> None:
@@ -155,6 +156,29 @@ def build_commute_job(sv: Services, record: bool) -> Message | None:
     return build_offday_greeting(sv.amap, sv.settings, info, events=sv.events)
 
 
+def build_digest(sv: Services, record: bool, name: str = "爸爸妈妈", greeting: str = "晚上好") -> Message | None:
+    """Evening local news: up to DIGEST_MAX_ITEMS original articles. None (send nothing) when there
+    are no new articles or the feed is down — never a broken message."""
+    if sv.events is None:
+        return None
+    try:
+        builder = DigestBuilder(get_llm(), sv.state, max_items=sv.settings.digest_max_items)
+        items = builder.build(sv.events.recent_articles(), sv.now().date())
+    except Exception:  # noqa: BLE001 — a digest is nice-to-have; skip rather than send a fallback
+        log.exception("digest build failed; skipping today")
+        return None
+    if not items:
+        log.info("digest: no new articles today")
+        return None
+    if record:
+        builder.remember(items)
+    return format_digest_message(items, name=name, greeting=greeting)
+
+
+def _parents(s: Settings) -> list[str]:
+    return list(dict.fromkeys(u for u in (s.father.wecom_userid, s.mother.wecom_userid) if u))
+
+
 JOBS: dict[str, Job] = {
     "commute": Job(
         build=build_commute_job,
@@ -173,6 +197,11 @@ JOBS: dict[str, Job] = {
         build=lambda sv, record: build_tv_message(sv.settings, sv.state, record=record, posters=sv.posters),
         recipients=lambda s: [s.member(r).wecom_userid for r in s.tv_recipients],
         cron=lambda s: s.tv_cron,
+    ),
+    "digest": Job(
+        build=build_digest,
+        recipients=_parents,
+        cron=lambda s: s.digest_cron,
     ),
 }
 
@@ -321,6 +350,8 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 900},
     )
     for name, job in JOBS.items():
+        if not job.cron(settings).strip():
+            continue  # empty cron = feature turned off (e.g. DIGEST_CRON=)
         trigger = CronTrigger.from_crontab(job.cron(settings), timezone=settings.timezone)
         scheduler.add_job(_scheduled_run, trigger, args=[name], id=name, name=name, replace_existing=True)
     if settings.daily_report_cron and settings.admin_userid:
@@ -622,6 +653,9 @@ def build_on_demand_message(
         )
     if command is Command.TV:
         return build_tv_message(sv.settings, sv.state, record=record, name=name or "您", posters=sv.posters)
+    if command is Command.NEWS:
+        # on demand: not remembered, so the evening digest can still include these stories
+        return build_digest(sv, record=False, name=name or "您", greeting="你好")
     if command is Command.WEATHER:
         audience = "father" if name == sv.settings.father.display_name else "mother"
         return build_weather_message(sv.amap, sv.settings, sv.now().date(), name=name or "您", greeting="你好",

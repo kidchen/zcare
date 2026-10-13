@@ -27,9 +27,9 @@ from clients.llm_client import LLMClient, LLMError
 
 log = logging.getLogger(__name__)
 
-INTENTS = ("traffic", "weather", "outing", "tv", "chat", "urgent", "feedback")
-INTENT_TO_COMMAND = {"traffic": Command.COMMUTE, "weather": Command.WEATHER, "outing": Command.OUTING,
-                     "tv": Command.TV}
+INTENTS = ("traffic", "weather", "news", "outing", "tv", "chat", "urgent", "feedback")
+INTENT_TO_COMMAND = {"traffic": Command.COMMUTE, "weather": Command.WEATHER, "news": Command.NEWS,
+                     "outing": Command.OUTING, "tv": Command.TV}
 COMMAND_TO_INTENT = {v: k for k, v in INTENT_TO_COMMAND.items()}
 
 HEALTH_URGENT_KEYWORDS = (
@@ -61,6 +61,7 @@ SYSTEM_PROMPT = """<role>
 <intents>
 traffic：爸爸上班开车的实时路况（只问天气时不要用 traffic）
 weather：天气、气温、冷热、下雨下雪、刮风，今天、明天或这几天的天气
+news：想听听本地新闻、最近呼和浩特有什么新鲜事
 outing：呼和浩特本地近期活动和去处——剧场演出（乌兰恰特大剧院等的戏曲、二人台、民歌、民族音乐会、民族舞）、博物馆和美术馆展览、文化馆公益活动、公园广场民俗活动，以及少换乘少步行的公交路线
 tv：好看的电视剧——正在热播的高分新剧（现代、悬疑、家庭等）和口碑经典（历史正剧、年代剧、军旅等，如《大明王朝1566》《父母爱情》），在电视上的「奇异果TV」看
 chat：问候、闲聊、倾诉、生活常识
@@ -70,8 +71,8 @@ feedback：对推荐过的地方或活动表达喜好，如「这个太远了」
 
 <rules>
 1. 用 Context 里的 User 称呼对方。语气温暖尊敬，像贴心晚辈；简单口语，不用网络流行语，不用 markdown。
-2. traffic/weather/outing/tv：只回一两句温暖确认，如「好的，我这就帮您查查～」；tv 可说「我给您挑几部好剧，在奇异果TV上就能看～」。具体信息由系统另发，绝不自己编路况、路线、活动或剧名。
-3. chat：自然回应，不超过100字。chat 之后系统不会再发消息，所以绝不说「我帮您查一下/看看/马上告诉您」；只要对方想了解路况、活动、去处或电视剧，就必须用 traffic/weather/outing/tv。不知道就坦诚说，可建议问问孩子。
+2. traffic/weather/news/outing/tv：只回一两句温暖确认，如「好的，我这就帮您查查～」；tv 可说「我给您挑几部好剧，在奇异果TV上就能看～」。具体信息由系统另发，绝不自己编路况、路线、活动或剧名。
+3. chat：自然回应，不超过100字。chat 之后系统不会再发消息，所以绝不说「我帮您查一下/看看/马上告诉您」；只要对方想了解路况、活动、去处或电视剧，就必须用 traffic/weather/news/outing/tv。不知道就坦诚说，可建议问问孩子。
 4. 健康话题不诊断，不推荐药物或剂量。
 5. urgent（身体）：一律按严重情况处理，不要建议先休息观察。两三句短话，第一句就让对方马上拨打120，如「（称呼），请马上拨打 120！先坐下别走动，把门打开，我已经通知孩子了。」
 6. urgent（诈骗）：和身体不适是两回事，不提 120。如「（称呼），先别转账，也别把验证码告诉任何人！先给孩子打个电话问清楚，我也已经通知孩子了。」你不是孩子，不要说「给我打电话」。
@@ -82,7 +83,7 @@ feedback：对推荐过的地方或活动表达喜好，如「这个太远了」
 
 <output>
 只输出一个 JSON 对象，不要任何其他内容：
-{"intent": "traffic|weather|outing|tv|chat|urgent|feedback", "reply": "给对方的回复"}
+{"intent": "traffic|weather|news|outing|tv|chat|urgent|feedback", "reply": "给对方的回复"}
 只有 intent 为 feedback 时再加：
 {"intent": "feedback", "reply": "…", "feedback": {"reason": "too_far|visited|not_interested|like", "value": "提到的场馆或类别，可为空"}}
 </output>"""

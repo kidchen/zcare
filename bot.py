@@ -25,6 +25,7 @@ class Command(str, Enum):
     OUTING = "outing"
     TV = "tv"
     WEATHER = "weather"
+    NEWS = "news"
     HELP = "help"
 
 
@@ -32,6 +33,7 @@ class Command(str, Enum):
 KEYWORDS: tuple[tuple[Command, tuple[str, ...]], ...] = (
     (Command.COMMUTE, ("路况", "堵车", "堵不堵", "开车")),
     (Command.WEATHER, ("天气", "气温", "温度", "下雨", "下雪", "冷不冷", "热不热", "降温", "刮风", "预报")),
+    (Command.NEWS, ("新闻", "新鲜事", "本地消息", "有啥事", "发生了什么")),
     (Command.TV, ("剧", "电视")),
     (Command.OUTING, ("出门", "去哪", "逛", "公交", "散步", "什么活动", "有活动", "展览", "好玩", "景点",
                       "演出", "二人台", "音乐会", "博物馆", "文化馆")),
@@ -41,6 +43,7 @@ HELP_TEXT = (
     "您好！给我发这些字就行：\n"
     "· 「路况」— 现在开车去单位堵不堵\n"
     "· 「天气」— 这几天的天气和穿衣提醒\n"
+    "· 「新闻」— 今天呼和浩特的新鲜事\n"
     "· 「出门」— 今天去哪儿逛逛、怎么坐公交\n"
     "· 「电视剧」— 最近好看的剧"
 )
@@ -48,6 +51,7 @@ HELP_TEXT = (
 ACK_TEXT = {
     Command.COMMUTE: "好的，正在查路况，稍等几秒～",
     Command.WEATHER: "好的，我看看这几天的天气～",
+    Command.NEWS: "好的，我给您挑几条今天的本地新闻～",
     Command.OUTING: "好的，正在帮您找地方和公交路线，稍等～",
     Command.TV: "好的，正在找好看的剧，大概要十几秒～",
 }

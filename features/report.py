@@ -6,10 +6,10 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-JOB_NAMES = {"commute": "爸爸早间路况", "outing": "妈妈出行推荐", "tv": "周五好剧"}
+JOB_NAMES = {"commute": "爸爸早间路况", "outing": "妈妈出行推荐", "tv": "周五好剧", "digest": "晚间本地新闻"}
 INTENT_CN = {"traffic": "路况", "weather": "天气", "outing": "出行/活动", "tv": "电视剧", "chat": "闲聊",
-             "urgent": "⚠️紧急", "feedback": "反馈", "help": "帮助", "commute": "路况", "admin": "管理"}
-PURPOSE_CN = {"chat": "对话", "extract": "文章提取"}
+             "urgent": "⚠️紧急", "feedback": "反馈", "news": "新闻", "help": "帮助", "commute": "路况", "admin": "管理"}
+PURPOSE_CN = {"chat": "对话", "extract": "文章提取", "digest": "新闻小报"}
 TARGET_CN = {"venue": "场馆", "category": "类别"}
 REASON_CN = {"too_far": "太远", "visited": "去过了", "not_interested": "不感兴趣", "like": "喜欢"}
 

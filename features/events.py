@@ -471,6 +471,10 @@ class EventFinder:
                     log.debug("on_stats hook failed", exc_info=True)
             return done
 
+    def recent_articles(self) -> list[Article]:
+        """The subscribed accounts' recent articles (shared 30-min feed cache; [] if the feed is down)."""
+        return self._articles()
+
     def find(self, today: date) -> list[LocalEvent]:
         """Upcoming verified events, today's first, then soonest; best-for-seniors first within a day."""
         self.refresh(today)

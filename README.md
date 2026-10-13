@@ -119,6 +119,21 @@ Privacy: parents' messages (and their display names) are sent to the LLM provide
 - AMap place lookups are name-checked (`poi_name_matches`): AMap's fuzzy top hit is often a different
   place (呼和浩特市文化馆 → 将军衙署博物院), which is now rejected instead of routed to.
 
+## Evening local-news digest
+
+Every day at `DIGEST_CRON` (default 19:30, after Friday's 19:00 drama message) both parents get up to
+`DIGEST_MAX_ITEMS` (default 5) news cards from the subscribed accounts — no topic/source filter, just ranking.
+Each card opens the **original** WeChat article.
+
+1. Candidates: today's/yesterday's articles not already sent. The same story from several accounts is grouped by
+   title similarity (titles with different numbers are kept apart), and stories already told are skipped too.
+2. GLM ranks them (titles + opening lines), then writes a plain title + 1–2 sentence summary for the top few.
+3. Every number in the GLM title/summary must appear in the article; otherwise — or if GLM is down — the card
+   uses the article's own title and first sentence. No articles → nothing is sent.
+
+Asking 「新闻」/「有啥新鲜事」 sends the current digest on demand (doesn't mark items as sent). Preview:
+`python main.py preview digest`; turn off with `DIGEST_CRON=`.
+
 ## Daily admin report
 
 Every day at `DAILY_REPORT_CRON` (default 21:00) `ADMIN_WECOM_USERID` gets a short WeCom text — scheduled
