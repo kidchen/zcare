@@ -124,7 +124,10 @@ Privacy: parents' messages (and their display names) are sent to the LLM provide
 Every day at `DIGEST_CRON` (default 19:30, after Friday's 19:00 drama message) both parents get up to
 `DIGEST_MAX_ITEMS` (default 5) local news items from the subscribed accounts — no topic/source filter, just
 ranking. It's one WeCom `news` message (a single bubble, like a 公众号 multi-article push) with one row per item;
-tapping a row opens the **original** WeChat article directly.
+tapping a row opens the **original** WeChat article directly. Covers come from the we-mp-rss RSS feed
+(`<enclosure>`; its JSON feed has none) and are served from zcare's `/posters/` (WeChat's image CDN shows a
+"not allowed to quote" placeholder when loaded with a foreign Referer). Links from we-mp-rss's WeRead mode
+that contain `~` (pre-2026-09-23 bug → WeChat 「参数错误」) are repaired to `_`.
 
 1. Candidates: today's/yesterday's articles not already sent. The same story from several accounts is grouped by
    title similarity (titles with different numbers are kept apart), and stories already told are skipped too.

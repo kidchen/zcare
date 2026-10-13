@@ -14,9 +14,11 @@ Full text requires GATHER.CONTENT=True on the server (also set in docker-compose
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
+from xml.etree import ElementTree
 
 import requests
 from bs4 import BeautifulSoup
@@ -34,6 +36,7 @@ class Article:
     published: date | None  # Beijing date
     url: str
     account: str = ""
+    image: str = ""  # cover image (mmbiz.qpic.cn); only the RSS feed carries it
 
 
 def _parse_iso(raw: str) -> date | None:
@@ -46,6 +49,18 @@ def _parse_iso(raw: str) -> date | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=CHINA_TZ)  # we-mp-rss emits Beijing time
     return dt.astimezone(CHINA_TZ).date()
+
+
+_SHORT_LINK = re.compile(r"^(https?://mp\.weixin\.qq\.com/s/)([^?#]+)(.*)$")
+
+
+def fix_link(url: str) -> str:
+    """we-mp-rss's WeRead mode (before its 2026-09-23 fix) wrote '_' as '~' in short-link tokens
+    (/s/ySsAk3lUFT0Wh~9IZCtr-g); WeChat answers those with 「参数错误」. Stored links keep the bug."""
+    m = _SHORT_LINK.match(url.strip())
+    if not m:
+        return url.strip()
+    return m.group(1) + re.sub(r"~|%7[Ee]", "_", m.group(2)) + m.group(3)
 
 
 def html_to_text(html: str) -> str:
@@ -67,7 +82,7 @@ def parse_feed(data: dict) -> list[Article]:
             title=title,
             content=content or (description if description != title else ""),
             published=_parse_iso(str(item.get("updated") or "")),
-            url=str(item.get("link") or ""),
+            url=fix_link(str(item.get("link") or "")),
             account=str(item.get("channel_name") or feed.get("name") or ""),
         ))
     return articles
@@ -98,4 +113,28 @@ class WeMpRssClient:
                 errors.append(exc)
         if not found and errors:
             raise errors[-1]
-        return list(found.values())
+        covers = self._covers()
+        return [replace(a, image=covers.get(a.url, "")) for a in found.values()]
+
+    def _covers(self) -> dict[str, str]:
+        """link → cover image from the RSS feeds' <enclosure> (the JSON feed omits it). Best effort."""
+        covers: dict[str, str] = {}
+        for feed in self._feeds:
+            try:
+                resp = self._session.get(f"{self._base}/feed/{feed}.rss", params={"limit": self._limit},
+                                         timeout=self._timeout)
+                resp.raise_for_status()
+                covers.update(parse_rss_covers(resp.content))
+            except (requests.RequestException, ElementTree.ParseError) as exc:
+                log.info("we-mp-rss covers for %s unavailable: %s", feed, exc)
+        return covers
+
+
+def parse_rss_covers(xml: bytes) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in ElementTree.fromstring(xml).iter("item"):
+        link, enc = fix_link(item.findtext("link") or ""), item.find("enclosure")
+        url = (enc.get("url") or "").strip() if enc is not None else ""
+        if link and url.startswith("http") and (enc.get("type") or "image/").startswith("image/"):
+            out[link] = url
+    return out

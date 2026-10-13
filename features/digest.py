@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from difflib import SequenceMatcher
-from typing import Iterable
+from typing import Callable, Iterable
 
 from clients.llm_client import LLMClient, LLMError
 from clients.wemp_rss import Article
@@ -74,6 +74,7 @@ class DigestItem:
     account: str
     key: str
     source_title: str = ""  # the article's own title (for cross-account duplicate detection)
+    image: str = ""  # the article's cover (source URL)
 
 
 def article_key(a: Article) -> str:
@@ -196,7 +197,7 @@ class DigestBuilder:
                 if title or summary:
                     log.info("digest item falls back to the article's own words: %s", a.title)
                 title, summary = a.title.strip(), lead_sentence(a.content) or a.title.strip()
-            items.append(DigestItem(title, summary, a.url, a.account, article_key(a), a.title))
+            items.append(DigestItem(title, summary, a.url, a.account, article_key(a), a.title, a.image))
             if len(items) >= self._max:
                 break
         return items
@@ -206,10 +207,12 @@ class DigestBuilder:
         self._state.remember(TITLES_KEY, [i.source_title for i in items], keep=KEEP_SENT)
 
 
-def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", greeting: str = "晚上好") -> Message:
+def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", greeting: str = "晚上好",
+                          cover: Callable[[str], str] | None = None) -> Message:
     """One WeCom ``news`` message with one row per item (shown as a single bubble, like a 公众号
-    multi-article push); each row opens the ORIGINAL article directly. Text/markdown modes get the
-    summaries with 阅读原文 links."""
+    multi-article push); each row opens the ORIGINAL article directly. ``cover`` maps an article's cover
+    to a public picurl (our cached copy; "" = no picture). Text/markdown modes get the summaries with
+    阅读原文 links."""
     lines = [f"**{name}{greeting} 📰 今天呼和浩特的新鲜事**", ""]
     for n, it in enumerate(items, start=1):
         src = f"（来源：{it.account}）" if it.account else ""
@@ -219,7 +222,7 @@ def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", g
         lines.append("")
     lines.append("点开就能看原文，看累了就歇歇眼睛～")
     cards = tuple(Card(title=f"{n}. {it.title}", description=f"{it.summary}\n来源：{it.account}" if it.account
-                       else it.summary, url=it.url)
+                       else it.summary, url=it.url, picurl=cover(it.image) if (cover and it.image) else "")
                   for n, it in enumerate(items, start=1) if it.url.startswith("http"))
     return Message(title=f"📰 今天呼和浩特的新鲜事（{len(items)}条）", markdown="\n".join(lines).strip(),
                    url=items[0].url or None, articles=cards)

@@ -172,7 +172,8 @@ def build_digest(sv: Services, record: bool, name: str = "爸爸妈妈", greetin
         return None
     if record:
         builder.remember(items)
-    return format_digest_message(items, name=name, greeting=greeting)
+    return format_digest_message(items, name=name, greeting=greeting,
+                                 cover=sv.posters.article_cover if sv.posters is not None else None)
 
 
 def _parents(s: Settings) -> list[str]:
@@ -439,12 +440,12 @@ def detail_page(report_id: str) -> HTMLResponse:
                                  "Referrer-Policy": "no-referrer"})
 
 
-_POSTER_FILE = re.compile(r"^(\d{1,12})\.jpg$")
+_POSTER_FILE = re.compile(r"^(\d{1,12}|wx[0-9a-f]{16})\.jpg$")
 
 
 @app.get("/posters/{filename}")
 def poster(filename: str) -> FileResponse:
-    """Public poster images for WeCom news cards (cached copies of Douban posters)."""
+    """Public images for WeCom news cards (cached Douban posters and WeChat article covers)."""
     match = _POSTER_FILE.match(filename)
     posters = get_services().posters
     path = posters.path_for(match.group(1)) if (match and posters) else None

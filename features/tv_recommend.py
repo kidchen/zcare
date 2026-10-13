@@ -15,6 +15,7 @@ Requests are throttled; set DOUBAN_COOKIE (``bid=...``) if you start getting 403
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
@@ -381,7 +382,7 @@ def _short(text: str, limit: int = SUMMARY_CHARS) -> str:
     return text if len(text) <= limit else text[:limit].rstrip("，。、 ") + "…"
 
 
-_SUBJECT_ID = re.compile(r"^\d{1,12}$")
+_SUBJECT_ID = re.compile(r"^(?:\d{1,12}|wx[0-9a-f]{16})$")  # Douban subject id | WeChat cover
 POSTER_MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -408,13 +409,23 @@ class PosterCache:
 
     def picurl(self, drama: Drama) -> str:
         """Public URL for the drama's poster, or "" if unavailable (card shows without a picture)."""
-        path = self.path_for(drama.subject_id)
-        if not (self._base and drama.poster and path):
+        return self.cache(drama.subject_id, drama.poster, {"Referer": "https://movie.douban.com/"}, drama.title)
+
+    def article_cover(self, image_url: str) -> str:
+        """Public URL for a WeChat article cover. mmbiz.qpic.cn shows a "not allowed to be quoted"
+        placeholder when loaded with a foreign Referer, so we fetch it without one and serve our copy."""
+        if not image_url.startswith(("https://mmbiz.qpic.cn/", "http://mmbiz.qpic.cn/")):
+            return ""
+        key = "wx" + hashlib.sha1(image_url.encode()).hexdigest()[:16]
+        return self.cache(key, image_url, {}, image_url)
+
+    def cache(self, key: str, source: str, headers: dict[str, str], label: str) -> str:
+        path = self.path_for(key)
+        if not (self._base and source and path):
             return ""
         if not path.exists():
             try:
-                resp = self._session.get(drama.poster, timeout=self._timeout,
-                                         headers={"Referer": "https://movie.douban.com/"})
+                resp = self._session.get(source, timeout=self._timeout, headers=headers)
                 resp.raise_for_status()
                 ctype = resp.headers.get("Content-Type", "")
                 if not ctype.startswith("image/") or not 0 < len(resp.content) <= POSTER_MAX_BYTES:
@@ -425,9 +436,9 @@ class PosterCache:
                 os.replace(tmp, path)
                 self._prune()
             except (requests.RequestException, ValueError, OSError) as exc:
-                log.warning("poster unavailable for %s: %s", drama.title, exc)
+                log.warning("image unavailable for %s: %s", label, exc)
                 return ""
-        return f"{self._base}/posters/{drama.subject_id}.jpg"
+        return f"{self._base}/posters/{key}.jpg"
 
     def _prune(self) -> None:
         files = sorted(self.directory.glob("*.jpg"), key=lambda p: p.stat().st_mtime)

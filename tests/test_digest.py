@@ -150,3 +150,51 @@ def test_digest_rows_open_original_articles_even_with_detail_pages_on(monkeypatc
     (msg,) = Rec.sent
     assert len(msg.articles) == 4 and all(a.url.startswith("https://mp.weixin.qq.com/") for a in msg.articles)
     assert not list((tmp_path / "d").glob("*"))  # no in-between page
+
+
+RSS = b"""<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>all</title>
+<item><title>a</title><link>https://mp.weixin.qq.com/s/AAA</link>
+<enclosure url="https://mmbiz.qpic.cn/sz_mmbiz_jpg/x/0?wx_fmt=jpeg" length="0" type="image/jpeg"/></item>
+<item><title>b</title><link>https://mp.weixin.qq.com/s/BBB</link></item></channel></rss>"""
+
+
+def test_feed_articles_get_covers_from_the_rss_feed():
+    from clients.wemp_rss import WeMpRssClient
+    from tests.conftest import FakeResponse, FakeSession
+    feed = {"items": [{"title": "a", "link": "https://mp.weixin.qq.com/s/AAA", "updated": "2026-10-13T08:00:00+08:00"},
+                      {"title": "b", "link": "https://mp.weixin.qq.com/s/BBB", "updated": "2026-10-13T08:00:00+08:00"}]}
+    session = FakeSession({"all.json": [FakeResponse(feed)], "all.rss": [FakeResponse(content=RSS)]})
+    got = {a.title: a.image for a in WeMpRssClient("http://rss", session=session).articles()}
+    assert got == {"a": "https://mmbiz.qpic.cn/sz_mmbiz_jpg/x/0?wx_fmt=jpeg", "b": ""}
+    broken = FakeSession({"all.json": [FakeResponse(feed)], "all.rss": [FakeResponse(content=b"<html")]})
+    assert [a.image for a in WeMpRssClient("http://rss", session=broken).articles()] == ["", ""]  # still works
+
+
+def test_article_covers_are_cached_without_referer_and_served_by_us(tmp_path):
+    from features.tv_recommend import PosterCache
+    from tests.conftest import FakeResponse, FakeSession
+    jpg = b"\xff\xd8\xff" + b"0" * 100
+    session = FakeSession({"mmbiz.qpic.cn": [FakeResponse(content=jpg, headers={"Content-Type": "image/jpeg"})]})
+    cache = PosterCache(tmp_path, "http://srv", session=session)
+    url = cache.article_cover("https://mmbiz.qpic.cn/sz_mmbiz_jpg/x/0?wx_fmt=jpeg")
+    assert url.startswith("http://srv/posters/wx") and url.endswith(".jpg")
+    assert "Referer" not in session.calls[0][2]["headers"]
+    assert cache.path_for(url.rsplit("/", 1)[1][:-4]).read_bytes() == jpg
+    assert cache.article_cover("https://evil.example/x.jpg") == ""  # only WeChat's image CDN
+
+    item = dg.DigestItem("t", "s", "https://mp.weixin.qq.com/s/AAA", "号", "k", "t",
+                         "https://mmbiz.qpic.cn/sz_mmbiz_jpg/x/0?wx_fmt=jpeg")
+    (card,) = dg.format_digest_message([item], cover=cache.article_cover).articles
+    assert card.picurl == url and card.url == "https://mp.weixin.qq.com/s/AAA"
+
+
+@pytest.mark.parametrize("raw, fixed", [
+    ("https://mp.weixin.qq.com/s/l2Y3H6GSlVhL~~dQrXNLgw", "https://mp.weixin.qq.com/s/l2Y3H6GSlVhL__dQrXNLgw"),
+    ("https://mp.weixin.qq.com/s/i%7ENDTofv-yMidFPzw7YH2w", "https://mp.weixin.qq.com/s/i_NDTofv-yMidFPzw7YH2w"),
+    ("https://mp.weixin.qq.com/s/OuUUQbIJQpHmoGe1gbXfGw", "https://mp.weixin.qq.com/s/OuUUQbIJQpHmoGe1gbXfGw"),
+    ("https://mp.weixin.qq.com/s?__biz=MzA~1&mid=2", "https://mp.weixin.qq.com/s?__biz=MzA~1&mid=2"),  # long form untouched
+])
+def test_weread_tilde_links_are_repaired(raw, fixed):
+    from clients.wemp_rss import fix_link, parse_feed
+    assert fix_link(raw) == fixed
+    assert parse_feed({"items": [{"title": "t", "link": raw}]})[0].url == fixed
