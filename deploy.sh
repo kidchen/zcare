@@ -338,8 +338,10 @@ ok "uploaded to $REMOTE:$REMOTE_TAR"
 
 # ---------------------------------------------------------------- 5. remote build & start
 step "5/5 Building & starting on server (first build can take a few minutes)"
-remote "bash -s -- '$REMOTE_DIR' '$REMOTE_TAR' '$REMOTE_ENV' '$UPLOAD_ENV'" <<'REMOTE_SCRIPT'
+remote "bash -s -- '$REMOTE_DIR' '$REMOTE_TAR' '$REMOTE_ENV' '$UPLOAD_ENV'" <<'REMOTE_SCRIPT' | tee "$WORK/remote.log"
 set -euo pipefail
+# NOTE: this script arrives on bash's stdin — any command that reads stdin (e.g. `docker compose exec -T`)
+# must get </dev/null, or it swallows the rest of the script and the deploy silently stops there.
 dir="$1"; tarball="$2"; envfile="$3"; upload_env="$4"
 release="${dir}.new"; previous="${dir}.prev"
 
@@ -368,14 +370,14 @@ fi
 echo "Waiting for /health ..."
 healthy=0
 for _ in $(seq 1 30); do
-  if docker compose exec -T zcare python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)" >/dev/null 2>&1; then
+  if docker compose exec -T zcare python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)" </dev/null >/dev/null 2>&1; then
     healthy=1; break
   fi
   sleep 2
 done
-docker compose ps
+docker compose ps </dev/null
 echo "----- last log lines -----"
-docker compose logs --tail 25 zcare
+docker compose logs --tail 25 zcare </dev/null
 if [ "$healthy" != "1" ]; then
   echo "App did not become healthy within 60s (see logs above)."
   echo "Rollback: cd $previous && docker compose up -d --build   (same project name: zcare)"
@@ -396,6 +398,7 @@ fi
 echo "DEPLOY_OK $(grep -E '^DRY_RUN=' .env || echo 'DRY_RUN=<unset>')"
 REMOTE_SCRIPT
 
+grep -q '^DEPLOY_OK' "$WORK/remote.log" || die "the server-side deploy script did not finish (no DEPLOY_OK) — see the output above"
 ok "deployed to $REMOTE:$REMOTE_DIR"
 if remote "grep -qiE '^DRY_RUN=(1|true|yes|on)' '$REMOTE_DIR/.env'"; then
   warn "DRY_RUN is ON on the server — messages are logged, not sent. Set DRY_RUN=false in $REMOTE_DIR/.env, then:"
