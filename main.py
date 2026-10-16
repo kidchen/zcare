@@ -15,12 +15,12 @@ import logging
 import re
 import secrets
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from typing import Callable
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -32,8 +32,6 @@ from bot import ChatBot, Command
 from clients.amap_client import AmapClient
 from clients.llm_client import LLMClient
 from clients.nmc_client import NmcClient
-from clients.wemp_admin import WeMpAdminClient, WeMpAdminError, is_image
-from clients.wemp_rss import WeMpRssClient
 from clients.wecom_callback import (
     CallbackFormatError,
     build_passive_reply,
@@ -42,21 +40,23 @@ from clients.wecom_callback import (
 )
 from clients.wecom_client import WeComClient
 from clients.wecom_crypto import WeComCrypto, WeComCryptoError
+from clients.wemp_admin import WeMpAdminClient, WeMpAdminError, is_image
+from clients.wemp_rss import WeMpRssClient
 from config import Settings, get_settings
-from features.assistant import FamilyAssistant
 from features.activity import ActivityLog
+from features.assistant import FamilyAssistant
 from features.commute import build_commute_message, build_offday_greeting
 from features.daytype import day_info
 from features.detail import DetailStore, render_page
 from features.digest import DigestBuilder, format_digest_message
 from features.events import EventFinder
 from features.outing import build_outing_message
-from features.report import build_daily_report
 from features.preferences import FEEDBACK_KEYWORDS, PreferenceStore
+from features.report import build_daily_report
 from features.tv_recommend import PosterCache, build_tv_message
 from features.weather import build_weather_message
 from messages import Message, add_notices, markdown_to_text
-from storage import StateStore
+from storage import StateStore, backup_data
 
 log = logging.getLogger("zcare")
 
@@ -89,17 +89,18 @@ def get_services() -> Services:
     if s.wecom_corp_id and s.wecom_agent_id and s.wecom_secret:
         wecom = WeComClient(s.wecom_corp_id, s.wecom_agent_id, s.wecom_secret)
     posters = PosterCache(s.state_file.parent / "posters", s.public_base_url)
-    state = StateStore(s.state_file)
+    activity = ActivityLog(s.state_file.parent / "activity.jsonl")
+    problem = lambda msg: activity.record("error", what="数据文件", error=msg)  # noqa: E731
+    state = StateStore(s.state_file, on_problem=problem)
     llm = get_llm()
     articles = WeMpRssClient(s.wemp_rss_url, s.wemp_rss_feeds) if s.wemp_rss_url else None
     warnings = NmcClient(s.nmc_province, s.nmc_city_keyword) if s.nmc_province else None
     # Events need articles + the (free) LLM for extraction; weather warnings need neither.
     events = (EventFinder(llm, state, articles=articles, warnings=warnings,
                           events_max_age_days=min(21, s.wemp_retention_days),
-                          extract_store=StateStore(s.state_file.parent / "article_extracts.json"))
+                          extract_store=StateStore(s.state_file.parent / "article_extracts.json", on_problem=problem))
               if (articles or warnings) else None)
     details = DetailStore(s.state_file.parent / "details", s.public_base_url)
-    activity = ActivityLog(s.state_file.parent / "activity.jsonl")
     if llm is not None:
         llm.on_call = lambda **k: activity.record("llm", **k)
     if events is not None:
@@ -290,6 +291,7 @@ def _scheduled_run(name: str) -> None:
 
 
 WEMP_CLEANUP_CRON = "30 3 * * *"  # daily 03:30, well away from the 06:30/11:30/17:30 fetches
+BACKUP_CRON = "45 3 * * *"  # daily 03:45 → data/backups/<YYYYMMDD>/, newest 7 kept
 EVENTS_WARM_CRON = "45 6,11,17 * * *"  # 15 min after the we-mp-rss fetches: extract new articles ahead of time
 
 
@@ -320,6 +322,17 @@ def run_wemp_cleanup() -> None:
     except Exception as exc:  # noqa: BLE001 — housekeeping must never take the scheduler down
         log.warning("we-mp-rss cleanup failed: %s", exc)
         get_services().record("cleanup", error=repr(exc)[:120])
+
+
+def run_backup() -> None:
+    """Nightly copy of state / article extracts / activity log (see storage.backup_data)."""
+    sv = get_services()
+    try:
+        dest = backup_data(sv.settings.state_file.parent, sv.now().date())
+        log.info("backup: %s", dest or "nothing to back up yet")
+    except Exception as exc:  # noqa: BLE001 — housekeeping must never take the scheduler down
+        log.warning("backup failed: %s", exc)
+        sv.record("error", what="每日备份", error=repr(exc)[:200])
 
 
 def build_report(sv: Services) -> tuple[str, str]:
@@ -358,6 +371,8 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
     if settings.daily_report_cron and settings.admin_userid:
         scheduler.add_job(run_daily_report, CronTrigger.from_crontab(settings.daily_report_cron, timezone=settings.timezone),
                           id="daily_report", name="daily_report", replace_existing=True)
+    scheduler.add_job(run_backup, CronTrigger.from_crontab(BACKUP_CRON, timezone=settings.timezone),
+                      id="backup", name="backup", replace_existing=True)
     if settings.wemp_rss_url and settings.llm_api_key:
         scheduler.add_job(run_events_warm, CronTrigger.from_crontab(EVENTS_WARM_CRON, timezone=settings.timezone),
                           id="events_warm", name="events_warm", replace_existing=True)

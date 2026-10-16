@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 import requests
 
-from bot import ChatBot, Command, RATE_LIMIT_TEXT
+from bot import RATE_LIMIT_TEXT, ChatBot, Command
 from clients.llm_client import LLMClient, LLMError
 from clients.wecom_callback import IncomingMessage
 from features.assistant import FamilyAssistant, keyword_fallback
@@ -136,6 +136,7 @@ def test_classifies_and_maps_to_command():
 
 def test_system_prompt_is_static_and_context_goes_in_user_turn():
     from datetime import timedelta
+
     from features.assistant import SYSTEM_PROMPT
     fake = ScriptedLLM(*[{"intent": "chat", "reply": "嗯"}] * 3)
     a = FamilyAssistant(fake, assistant_name="小暖")
@@ -165,6 +166,7 @@ def test_history_is_replayed_verbatim_so_prefix_grows():
 
 def test_system_prompt_is_a_module_constant_never_formatted():
     import inspect
+
     import features.assistant as mod
     assert isinstance(mod.SYSTEM_PROMPT, str)
     assert "SYSTEM_PROMPT.format" not in inspect.getsource(mod)
@@ -271,8 +273,12 @@ def test_run_llm_chat_urgent_alerts_admin(wired):
 
 
 def test_route_with_llm_enabled_returns_empty_and_schedules_chat(monkeypatch):
-    import base64, os, time
+    import base64
+    import os
+    import time
+
     from fastapi.testclient import TestClient
+
     import config
     import main
     from clients.wecom_crypto import WeComCrypto
@@ -350,6 +356,7 @@ def test_per_call_timeout_and_attempts_override_defaults(monkeypatch):
 
 def test_extraction_uses_long_timeout_and_large_output_budget(state):
     from datetime import date
+
     from clients.wemp_rss import Article
     from features import events as ev
     seen = {}
@@ -393,6 +400,7 @@ def test_chat_uses_lower_temperature():
 
 def test_warm_up_job_is_scheduled_after_wemp_fetches(settings):
     import dataclasses
+
     import main
     sched = main.build_scheduler(dataclasses.replace(settings, wemp_rss_url="http://we-mp-rss:8001", llm_api_key="k"))
     job = {j.id: j for j in sched.get_jobs()}["events_warm"]

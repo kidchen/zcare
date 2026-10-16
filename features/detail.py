@@ -17,9 +17,9 @@ import os
 import re
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable
 
 from messages import Message
 

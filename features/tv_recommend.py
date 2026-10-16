@@ -22,10 +22,10 @@ import os
 import random
 import re
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import Callable, Iterable
 
 import requests
 from bs4 import BeautifulSoup

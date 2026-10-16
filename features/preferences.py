@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Callable, Iterable
 
 from storage import StateStore
 

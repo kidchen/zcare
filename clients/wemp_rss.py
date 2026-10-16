@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
-from typing import Iterable
 from xml.etree import ElementTree
 
 import requests

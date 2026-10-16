@@ -2,8 +2,8 @@ from datetime import date
 
 from clients.amap_client import AmapClient
 from features import outing
-from tests.conftest import FakeResponse, FakeSession
 from tests import fixtures as fx
+from tests.conftest import FakeResponse, FakeSession
 
 MONDAY, TUESDAY = date(2026, 10, 12), date(2026, 10, 13)
 

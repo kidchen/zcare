@@ -1,8 +1,8 @@
 import pytest
 
 from features import tv_recommend as tv
-from tests.conftest import FakeResponse, FakeSession
 from tests import fixtures as fx
+from tests.conftest import FakeResponse, FakeSession
 
 
 def source(mobile=None):
@@ -53,6 +53,7 @@ def test_build_tv_message_records_state(settings, state):
 def test_anti_bot_redirect_is_an_error_not_empty_data():
     import pytest
     import requests
+
     from tests.conftest import FakeSession
     session = FakeSession({
         "/rexxar/api/v2/tv/": [FakeResponse({}, status=403)],
@@ -77,10 +78,8 @@ def big_source(n=40):
     return tv.DoubanTvSource(session=session, delay_s=0)
 
 
-def test_repeated_requests_never_repeat_until_pool_is_exhausted(settings, state):
-    import dataclasses
+def test_repeated_requests_never_repeat_until_pool_is_exhausted(state):
     import random
-    s = dataclasses.replace(settings, tv_min_rating=7.5, tv_picks=3)
     src, shown = big_source(40), []
     for seed in range(13):  # 13 × 3 = 39 picks from 40 candidates
         picks = tv.recommend(src, ("历史",), (), 7.5, 3, state.recent(tv.STATE_KEY), rng=random.Random(seed))
@@ -107,6 +106,7 @@ def test_selection_varies_between_runs():
 
 def test_on_demand_tv_is_recorded_only_when_really_sending(monkeypatch, settings, state):
     import dataclasses
+
     import main
     from bot import Command
     captured = []

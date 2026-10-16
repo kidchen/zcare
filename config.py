@@ -63,7 +63,7 @@ class Location:
     coords: str
 
     @classmethod
-    def parse(cls, env_name: str, label: str, raw: str) -> "Location":
+    def parse(cls, env_name: str, label: str, raw: str) -> Location:
         try:
             lng_s, lat_s = (p.strip() for p in raw.split(","))
             lng, lat = float(lng_s), float(lat_s)

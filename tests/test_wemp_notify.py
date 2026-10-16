@@ -12,6 +12,7 @@ PNG_B64 = base64.b64encode(PNG).decode()
 @pytest.fixture
 def client(monkeypatch):
     from fastapi.testclient import TestClient
+
     import config
     import main
     caches = (config.get_settings, main.get_services, main.get_wecom_crypto, main.get_bot,
@@ -75,7 +76,7 @@ def test_notify_rejects_non_json(client):
 def test_extract_qr_image_rejects_non_images_and_oversize():
     import main
     assert main.extract_qr_image(f"![x](data:image/png;base64,{PNG_B64})") == PNG
-    assert main.extract_qr_image("![x](data:image/png;base64,%s)" % base64.b64encode(b"<html>").decode()) is None
+    assert main.extract_qr_image(f"![x](data:image/png;base64,{base64.b64encode(b'<html>').decode()})") is None
     assert main.extract_qr_image("no image here") is None
     big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * (3 * 1024 * 1024)).decode()
     assert main.extract_qr_image(f"data:image/png;base64,{big}") is None
@@ -223,6 +224,7 @@ def test_clean_old_calls_server_cleanup_with_retention():
 
 def test_cleanup_job_is_scheduled_daily_only_when_configured(settings):
     import dataclasses
+
     import main
     on = main.build_scheduler(dataclasses.replace(settings, wemp_rss_url="http://we-mp-rss:8001", wemp_admin_password="pw"))
     job = {j.id: j for j in on.get_jobs()}["wemp_cleanup"]
@@ -233,6 +235,7 @@ def test_cleanup_job_is_scheduled_daily_only_when_configured(settings):
 
 def test_run_cleanup_uses_retention_and_never_raises(monkeypatch, settings):
     import dataclasses
+
     import main
     calls = []
 
@@ -256,6 +259,7 @@ def test_run_cleanup_uses_retention_and_never_raises(monkeypatch, settings):
 
 def test_events_lookback_follows_retention(state):
     from datetime import date
+
     from clients.wemp_rss import Article
     from features import events as ev
 

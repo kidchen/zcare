@@ -1,0 +1,7 @@
+[Unit]
+Description=zcare watchdog: alert the admin on WeCom when zcare / we-mp-rss is down
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zcare-watchdog /root/zcare/.env

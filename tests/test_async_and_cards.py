@@ -7,13 +7,11 @@ import threading
 import time
 from datetime import datetime
 
-import pytest
-
 from bot import Command, parse_command
 from clients.wecom_client import WeComClient
 from features import tv_recommend as tv
 from features.assistant import FamilyAssistant
-from messages import Article, Message
+from messages import Message
 from tests.conftest import FakeResponse, FakeSession
 
 TOKEN_RESP = FakeResponse({"errcode": 0, "access_token": "T", "expires_in": 7200})
@@ -92,8 +90,8 @@ def test_message_without_link_falls_back_to_text_in_news_mode():
 
 def test_commute_and_outing_build_single_linked_articles(settings, state):
     from clients.amap_client import AmapClient
-    from features.commute import build_commute_message
     from features import outing
+    from features.commute import build_commute_message
     from tests import fixtures as fx
     def amap():
         return AmapClient("k", session=FakeSession({
@@ -134,6 +132,7 @@ def test_poster_cache_rejects_non_images_and_needs_public_url(tmp_path):
 
 def test_poster_route_serves_cached_file_and_404s_otherwise(monkeypatch, tmp_path, settings, state):
     from fastapi.testclient import TestClient
+
     import main
     cache = tv.PosterCache(tmp_path, "http://srv")
     (tmp_path / "123.jpg").write_bytes(b"\xff\xd8\xffjpeg")
@@ -151,6 +150,7 @@ def test_poster_route_serves_cached_file_and_404s_otherwise(monkeypatch, tmp_pat
 def test_webhook_responds_before_slow_background_work_finishes(monkeypatch):
     """Real worker pool: the HTTP response must not wait for the LLM/data work."""
     from fastapi.testclient import TestClient
+
     import config
     import main
     from clients.wecom_crypto import WeComCrypto

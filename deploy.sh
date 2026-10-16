@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # deploy.sh — package zcare, upload to the Alibaba Cloud server, rebuild & restart the container.
 #
-# Usage:  ./deploy.sh [--skip-tests] [--push-env] [--package-only] [-h]
+# Usage:  ./deploy.sh [--skip-tests] [--push-env] [--package-only] [--fetch-backup] [-h]
 #   --skip-tests    don't run the local pytest suite first
 #   --push-env      upload local .env even if the server already has one (overwrites it)
 #   --package-only  build the tarball locally and list it; no SSH (for checking)
+#   --fetch-backup  download the server's newest nightly data backup into ./backups/ (no deploy)
 #
 # Target: ZCARE_REMOTE (e.g. root@<server-ip>) from the environment or a git-ignored .deploy.env file.
 # Other overrides (env vars): ZCARE_REMOTE_DIR (/root/zcare),
@@ -26,12 +27,14 @@ SSH_KEY="${ZCARE_SSH_KEY:-}"
 SKIP_TESTS=0
 PUSH_ENV=0
 PACKAGE_ONLY=0
+FETCH_BACKUP=0
 for arg in "$@"; do
   case "$arg" in
     --skip-tests)   SKIP_TESTS=1 ;;
     --push-env)     PUSH_ENV=1 ;;
     --package-only) PACKAGE_ONLY=1 ;;
-    -h|--help)      sed -n '2,12p' "$0"; exit 0 ;;
+    --fetch-backup) FETCH_BACKUP=1 ;;
+    -h|--help)      sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -198,8 +201,26 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 deploy.sh
+deploy/
+backups/
+scripts/
+.github/
+pyproject.toml
 DOCKERIGNORE_EOF
 }
+
+# ---------------------------------------------------------------- --fetch-backup (no deploy)
+if [ "$FETCH_BACKUP" -eq 1 ]; then
+  [ -n "$REMOTE" ] || die "set ZCARE_REMOTE (or .deploy.env) to fetch a backup"
+  BOPTS=(-p "$SSH_PORT" -o ConnectTimeout=10); [ -n "$SSH_KEY" ] && BOPTS+=(-i "$SSH_KEY")
+  mkdir -p backups
+  out="backups/zcare-data-$STAMP.tar.gz"
+  # The data volume is mounted at /app/data in the container; stream the newest backups/<day>/ out of it.
+  ssh "${BOPTS[@]}" "$REMOTE" "cd '$REMOTE_DIR' && docker compose exec -T zcare sh -c 'cd /app/data/backups && d=\$(ls -1 | grep -E \"^[0-9]{8}\$\" | tail -1) && [ -n \"\$d\" ] && tar -czf - \"\$d\"'" > "$out" \
+    || { rm -f "$out"; die "no backup found on the server yet (the first one runs at 03:45)"; }
+  ok "saved $out ($(du -h "$out" | cut -f1 | tr -d ' ')) — contains: $(tar -tzf "$out" | tr '\n' ' ')"
+  exit 0
+fi
 
 step "1/5 Docker files"
 [ -f Dockerfile ]         && ok "Dockerfile exists"         || { write_dockerfile;   ok "created Dockerfile"; }
@@ -213,6 +234,10 @@ if [ "$SKIP_TESTS" -eq 1 ]; then
 elif [ -x .venv/bin/python ] && .venv/bin/python -c "import pytest" 2>/dev/null; then
   .venv/bin/python -m pytest -q >"$WORK/pytest.log" 2>&1 || { tail -30 "$WORK/pytest.log"; die "tests failed — fix them or use --skip-tests"; }
   ok "tests passed ($(tail -1 "$WORK/pytest.log"))"
+  if [ -x .venv/bin/ruff ]; then
+    .venv/bin/ruff check --quiet . || die "ruff found problems — fix them (.venv/bin/ruff check --fix .) or use --skip-tests"
+    ok "ruff clean"
+  fi
 else
   warn "no .venv with pytest found; skipping tests"
 fi
@@ -222,6 +247,7 @@ EXCLUDES=(
   --exclude=__pycache__ --exclude='*.pyc' --exclude=.pytest_cache --exclude=.DS_Store
   --exclude=data --exclude=tests --exclude='*.log' --exclude='*.tar.gz'
   --exclude=deploy.sh --exclude=.deploy.env --exclude='.env.*' --exclude=zcare_plan.md
+  --exclude=backups --exclude=.privacy-patterns --exclude=.github --exclude=.ruff_cache
 )
 TAR_FLAGS=()
 if tar --version 2>/dev/null | grep -qi bsdtar; then
@@ -356,6 +382,17 @@ if [ "$healthy" != "1" ]; then
   exit 1
 fi
 docker image prune -f >/dev/null 2>&1 || true
+
+# Watchdog (systemd timer, every 5 min): WeCom alert to the admin when zcare / we-mp-rss is down.
+if command -v systemctl >/dev/null 2>&1 && [ -f deploy/watchdog.sh ]; then
+  install -m 755 deploy/watchdog.sh /usr/local/bin/zcare-watchdog
+  sed "s#/root/zcare/.env#$dir/.env#" deploy/zcare-watchdog.service > /etc/systemd/system/zcare-watchdog.service
+  install -m 644 deploy/zcare-watchdog.timer /etc/systemd/system/zcare-watchdog.timer
+  systemctl daemon-reload && systemctl enable --now zcare-watchdog.timer >/dev/null 2>&1 \
+    && echo "watchdog timer active (alerts ADMIN_WECOM_USERID)" || echo "WARNING: could not enable the watchdog timer"
+else
+  echo "WARNING: no systemd — watchdog not installed"
+fi
 echo "DEPLOY_OK $(grep -E '^DRY_RUN=' .env || echo 'DRY_RUN=<unset>')"
 REMOTE_SCRIPT
 

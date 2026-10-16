@@ -1,8 +1,6 @@
 import time
 from datetime import date
 
-import pytest
-
 from features import detail as dt
 from messages import Article, Message
 
@@ -81,6 +79,7 @@ def test_load_rejects_bad_ids_and_expired_pages(tmp_path):
 
 def test_detail_route_serves_page_and_404s(monkeypatch, tmp_path, settings, state):
     from fastapi.testclient import TestClient
+
     import main
     store = dt.DetailStore(tmp_path, "http://srv")
     report_id = store.publish(outing_message()).articles[0].url.rsplit("/", 1)[1]
@@ -97,6 +96,7 @@ def test_detail_route_serves_page_and_404s(monkeypatch, tmp_path, settings, stat
 
 def test_deliver_publishes_only_for_card_formats(monkeypatch, tmp_path, settings, state):
     import dataclasses
+
     import main
 
     class Rec:

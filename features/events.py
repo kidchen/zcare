@@ -383,7 +383,7 @@ def _event_from_json(d: dict[str, Any]) -> LocalEvent:
     )
 
 
-def notice_lines(finder: "EventFinder | None", today: date, audience: str, limit: int = 2) -> list[str]:
+def notice_lines(finder: EventFinder | None, today: date, audience: str, limit: int = 2) -> list[str]:
     """Best-effort reminder lines for a message; never raises."""
     if finder is None:
         return []
@@ -449,7 +449,7 @@ class EventFinder:
                 if results is None:
                     failed += 1
                     continue  # failed batch: not cached, retried on the next refresh
-                for a, (events, notices) in zip(batch, results):
+                for a, (events, notices) in zip(batch, results, strict=True):
                     known[article_key(a)] = {
                         "at": self._clock(), "published": a.published.isoformat() if a.published else "",
                         "title": a.title, "text": f"{a.title}\n{a.content[:ARTICLE_TEXT_CHARS]}",

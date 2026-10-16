@@ -16,8 +16,8 @@ import json
 import logging
 import threading
 import time
-from datetime import date
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import requests
@@ -136,7 +136,6 @@ class LLMClient:
             "stream": False,
         }
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
-        last_error = "unknown"
         started = time.monotonic()
         try:
             result = self._chat_json(payload, headers, max_tokens, timeout, max_attempts, purpose)

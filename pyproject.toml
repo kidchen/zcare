@@ -1,0 +1,26 @@
+[project]
+name = "zcare"
+version = "0.1.0"
+description = "WeCom helper for parents in Hohhot: commute traffic, outings, dramas, evening news, chat"
+requires-python = ">=3.13"
+
+[tool.ruff]
+line-length = 140
+target-version = "py313"
+extend-exclude = ["data", "backups"]
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, import order, bugbear, pyupgrade (same set as nari)
+select = ["F", "E", "W", "I", "B", "UP"]
+ignore = [
+  "E731",   # small lambdas as callbacks are fine here
+  "B008",   # function calls in defaults (dataclass field factories)
+  "E702",   # `close_list(); out.append(...)` one-liners in the tiny markdown renderer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]   # long assertions read better on one line
+# GLM prompts: one rule per line on purpose (re-wrapping changes the prompt the model sees)
+"features/assistant.py" = ["E501"]
+"features/events.py" = ["E501"]
+"features/digest.py" = ["E501"]

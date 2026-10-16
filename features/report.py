@@ -114,7 +114,8 @@ def build_daily_report(entries: list[dict[str, Any]], now: datetime, names: dict
                                     for e in on_demand_failed]]
     md += ["", "**📰 公众号文章与提取**",
            f"- 订阅源里最近的文章：{feed_total} 篇" + (f"（拉取失败 {feed_errors} 次）" if feed_errors else ""),
-           f"- 新的相关文章：{new_relevant} 篇，已送 GLM 提取：{processed} 篇" + (f"，失败批次：{failed_batches}" if failed_batches else ""),
+           f"- 新的相关文章：{new_relevant} 篇，已送 GLM 提取：{processed} 篇"
+           + (f"，失败批次：{failed_batches}" if failed_batches else ""),
            f"- 提取缓存：{cached} 篇；当前通过核验的活动 {events_ok} 个、提醒 {notices_ok} 条"]
     md += ["", "**🤖 GLM 用量**"]
     if llm:

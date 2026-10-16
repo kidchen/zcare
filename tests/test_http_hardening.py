@@ -6,6 +6,7 @@ import pytest
 @pytest.fixture
 def client(monkeypatch):
     from fastapi.testclient import TestClient
+
     import config
     import main
     caches = (config.get_settings, main.get_services, main.get_wecom_crypto, main.get_bot, main.get_assistant, main.get_llm, main.get_wemp_admin)
@@ -31,7 +32,7 @@ def test_health_is_minimal_for_strangers_detailed_with_token(client):
         assert c.get("/health").json() == {"status": "ok"}
         assert c.get("/health", headers={"X-Admin-Token": "wrong"}).json() == {"status": "ok"}
         detailed = c.get("/health", headers={"X-Admin-Token": "s3cret"}).json()
-        assert set(detailed["jobs"]) == {"commute", "outing", "tv", "digest"}
+        assert set(detailed["jobs"]) == {"commute", "outing", "tv", "digest", "backup"}
 
 
 def test_jobs_require_token_even_for_dry_run(client):

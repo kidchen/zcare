@@ -15,7 +15,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# --- build / deploy artifacts ---
+# --- build / deploy artifacts, local backups, personal privacy patterns ---
+backups/
+.privacy-patterns
+.ruff_cache/
 *.tar.gz
 *.log
 *.tmp

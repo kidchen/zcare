@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Enabled by scripts/install-hooks.sh (git config core.hooksPath .githooks).
+set -e
+python3 scripts/privacy_check.py
+if [ -x .venv/bin/ruff ]; then .venv/bin/ruff check --quiet .; fi

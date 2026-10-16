@@ -11,16 +11,16 @@ import logging
 import threading
 import time
 from collections import OrderedDict, deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Iterable
 
 from clients.wecom_callback import IncomingMessage
 
 log = logging.getLogger(__name__)
 
 
-class Command(str, Enum):
+class Command(str, Enum):  # noqa: UP042 — keep str() / repr() behaviour unchanged
     COMMUTE = "commute"
     OUTING = "outing"
     TV = "tv"

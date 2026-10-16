@@ -1,7 +1,7 @@
 from clients.amap_client import AmapClient
 from features.commute import build_commute_message
-from tests.conftest import FakeResponse, FakeSession
 from tests import fixtures as fx
+from tests.conftest import FakeResponse, FakeSession
 
 
 def test_commute_message(settings):

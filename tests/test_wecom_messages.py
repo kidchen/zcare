@@ -7,7 +7,11 @@ import pytest
 
 from bot import ACK_TEXT, COOLDOWN_TEXT, HELP_TEXT, ChatBot, Command, parse_command
 from clients.wecom_callback import (
-    CallbackFormatError, IncomingMessage, build_passive_reply, extract_encrypt, parse_message,
+    CallbackFormatError,
+    IncomingMessage,
+    build_passive_reply,
+    extract_encrypt,
+    parse_message,
 )
 from clients.wecom_crypto import WeComCrypto
 
@@ -90,6 +94,7 @@ def test_passive_reply_roundtrip_and_cdata_escape():
 @pytest.fixture
 def app_client(monkeypatch):
     from fastapi.testclient import TestClient
+
     import config
     import main
     monkeypatch.setenv("WECOM_CALLBACK_TOKEN", TOKEN)

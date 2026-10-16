@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from difflib import SequenceMatcher
-from typing import Callable, Iterable
 
 from clients.llm_client import LLMClient, LLMError
 from clients.wemp_rss import Article

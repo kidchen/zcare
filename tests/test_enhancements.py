@@ -10,7 +10,6 @@ from features import outing
 from features.daytype import day_info, off_days
 from features.events import LocalEvent, LocalNotice
 from features.preferences import Feedback, PreferenceStore
-from messages import Message
 from tests import fixtures as fx
 from tests.conftest import FakeResponse, FakeSession
 

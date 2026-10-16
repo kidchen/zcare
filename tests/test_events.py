@@ -1,9 +1,11 @@
 from datetime import date
 
 import pytest
+import requests
 
 from clients.amap_client import AmapClient
 from clients.llm_client import LLMError
+from clients.wemp_rss import Article as FeedArticle
 from features import events as ev
 from features import outing
 from tests import fixtures as fx
@@ -52,8 +54,6 @@ def test_running_exhibition_is_kept():
                               time="", category="展览", source=3), SRC, TODAY, 7)
     assert e and e.end == date(2026, 11, 30) and e.when() == "展期至11月30日"
 
-
-from clients.wemp_rss import Article as FeedArticle
 
 
 class FakeFeed:
@@ -133,6 +133,7 @@ def test_finder_survives_feed_and_llm_failures(state):
 
 def test_no_web_search_anywhere():
     import inspect
+
     import clients.llm_client as llm_mod
     assert not hasattr(llm_mod.LLMClient, "web_search")
     assert "web_search" not in inspect.getsource(ev)
@@ -314,6 +315,7 @@ class FakeWarnings:
 
 def W(signal, issued, detail="48小时内全市最低气温将要下降8℃以上。", lifted=False):
     from datetime import datetime as dt
+
     from clients.nmc_client import WeatherWarning
     return WeatherWarning(f"内蒙古自治区呼和浩特市气象台{'解除' if lifted else '发布'}{signal}", signal,
                           dt.fromisoformat(issued), detail, "u", lifted)
@@ -412,6 +414,7 @@ def test_stay_home_message_still_gets_notices(settings, state):
 
 def test_chat_context_carries_notes_but_system_prompt_stays_static():
     from datetime import datetime
+
     from features.assistant import SYSTEM_PROMPT, FamilyAssistant
 
     class Capture:
@@ -450,7 +453,7 @@ def test_ongoing_closure_is_kept_with_duration_evidence():
 
 def test_title_relative_day_and_numbers_are_sanitized():
     src = ["明天出门，穿衣请调整一下！\n呼和浩特即将大幅降温！ 明天出门 记得穿厚一些 跌破0°C"]
-    pub, today = [date(2026, 10, 11)], date(2026, 10, 12)
+    pub = [date(2026, 10, 11)]
     ok = ev.validate_notice({"category": "天气", "title": "明天降温跌破0°C，出门穿厚点", "date": "2026-10-12",
                              "quote": "明天出门 记得穿厚一些", "source": 1}, src, pub, date(2026, 10, 11))
     assert ok and ok.title == "降温跌破0°C，出门穿厚点" and ok.line(date(2026, 10, 11)) == "明天：降温跌破0°C，出门穿厚点"
@@ -539,7 +542,7 @@ def test_wemp_client_requests_json_feed():
     WeMpRssClient("http://we-mp-rss:8001", [], session=s2).articles()
     assert s2.calls[0][1].endswith("/feed/all.json")
     s3 = FakeSession({"/feed/": [FakeResponse({}, status=502)]})
-    with pytest.raises(Exception):
+    with pytest.raises(requests.HTTPError):
         WeMpRssClient("http://x", [], session=s3).articles()
 
 def test_dead_feed_is_tried_once_per_message_not_per_layer(state):

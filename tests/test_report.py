@@ -3,8 +3,6 @@ import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from features.activity import ActivityLog
 from features.report import build_daily_report
 
@@ -106,8 +104,8 @@ def test_report_job_is_scheduled(settings):
 
 def test_activity_is_recorded_from_jobs_chat_llm_and_extraction(monkeypatch, tmp_path, settings, state):
     import main
-    from features.assistant import FamilyAssistant
     from bot import ChatBot
+    from features.assistant import FamilyAssistant
 
     act = ActivityLog(tmp_path / "a.jsonl")
 

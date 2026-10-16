@@ -1,8 +1,8 @@
 import pytest
 
 from clients.amap_client import AmapClient, AmapError
-from tests.conftest import FakeResponse, FakeSession
 from tests import fixtures as fx
+from tests.conftest import FakeResponse, FakeSession
 
 
 def client(routes):
@@ -22,7 +22,7 @@ def test_transit_parsing_counts_transfers_and_tolerates_list_fields():
     plans = client({"/direction/transit": [FakeResponse(fx.TRANSIT)]}).get_transit_routes("a", "b", "呼和浩特")
     direct, complex_ = plans
     assert direct.transfers == 0 and direct.walking_m == 450
-    assert [l.mode for l in direct.legs] == ["walk", "bus", "walk"]
+    assert [leg.mode for leg in direct.legs] == ["walk", "bus", "walk"]
     assert direct.legs[1].stop_count == 6
     assert complex_.transfers == 2 and complex_.legs[1].mode == "subway"
 

@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable, Protocol
+from typing import Protocol
 
 import requests
 from bs4 import BeautifulSoup
@@ -30,13 +31,13 @@ from clients.amap_client import (
     TransitPlan,
     poi_is_indoor,
 )
+from clients.http import DESKTOP_UA, build_session
 from clients.llm_client import LLMError
+from config import Settings
+from features.commute import format_weather
 from features.daytype import DayInfo, day_info, off_days
 from features.events import EventFinder, LocalEvent, notice_lines
 from features.preferences import PreferenceStore
-from clients.http import DESKTOP_UA, build_session
-from config import Settings
-from features.commute import format_weather
 from messages import Article, Message, add_notices, amap_nav_url
 from storage import StateStore
 

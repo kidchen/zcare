@@ -211,6 +211,7 @@ served with no-store / no-referrer / noindex headers.
 ./deploy.sh                # tests → package → scp → docker compose up -d --build → health check
 ./deploy.sh --push-env     # also replace the server's .env with your local one
 ./deploy.sh --package-only # just build/list the tarball, no SSH
+./deploy.sh --fetch-backup # download the newest nightly data backup into ./backups/ (no deploy)
 ```
 
 Target defaults to `root@<server-ip>:/root/zcare` (override with `ZCARE_REMOTE`, `ZCARE_REMOTE_DIR`,
@@ -223,6 +224,39 @@ ssh-copy-id root@<server-ip>
 
 Each deploy unpacks into a fresh directory (the previous one is kept as `/root/zcare.prev` for
 rollback), keeps the server's `.env` unless `--push-env`, and fails loudly if `/health` doesn't come up.
+
+## Data safety & monitoring
+
+- **State files can't silently reset.** `data/state.json` (sent dramas/news, preferences) and
+  `data/article_extracts.json` are written atomically, and each write first keeps the previous good copy
+  as `<name>.bak`. A file that can't be read is moved aside to `<name>.corrupt-<time>` (never overwritten)
+  and the `.bak` copy is restored; the problem shows up under ❗ 异常 in the 21:00 report.
+- **Nightly backup (03:45):** `state.json`, `article_extracts.json` and `activity.jsonl` are copied to
+  `data/backups/<YYYYMMDD>/` in the data volume; the newest 7 days are kept. To keep a copy off the server:
+  `./deploy.sh --fetch-backup` → `backups/zcare-data-<time>.tar.gz` (git-ignored). Restore: stop zcare,
+  copy the files back into the volume (`docker compose cp <file> zcare:/app/data/`), start it.
+- **Watchdog:** `deploy.sh` installs a systemd timer on the server (`zcare-watchdog.timer`, every 5 min).
+  If the zcare container is down/unhealthy or we-mp-rss isn't running for 2 checks in a row,
+  `ADMIN_WECOM_USERID` gets one WeCom text; another when it recovers. It reads the WeCom settings from the
+  server's `.env`. Check it: `systemctl list-timers zcare-watchdog.timer`, `journalctl -u zcare-watchdog`.
+
+## Development
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+scripts/install-hooks.sh          # once per clone: pre-commit = privacy check + ruff
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check .            # --fix for import order etc.
+```
+
+- **Privacy check** (`scripts/privacy_check.py`, also `--all` for every tracked file): blocks a commit that
+  contains any 8+-character `.env` value not also in `.env.example` (keys, secrets, home/work coordinates
+  and addresses, user ids), or the server address from `.deploy.env`. Add your own regexes, one per line,
+  to the git-ignored `.privacy-patterns` (e.g. family names, your neighbourhood, phone numbers).
+- **CI** (`.github/workflows/ci.yml`): ruff + pytest on every push and pull request. `deploy.sh` runs the
+  same checks locally before uploading.
+- GLM prompts in `features/assistant.py`, `events.py` and `digest.py` keep one rule per line (exempt from
+  the line-length rule): re-wrapping them would change what the model sees.
 
 ## Docker
 
