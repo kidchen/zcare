@@ -258,7 +258,17 @@ def format_outing_message(
         ])
         articles = (Article(f"{name}{greeting}，今天去{place_name}走走？", desc, nav_url, poi.photo),)
     return Message(title=f"今日出行建议 · {place_name}", markdown="\n".join(lines), url=nav_url,
-                   articles=articles)
+                   articles=articles, headline=f"去{place_name} 公交{minutes}分钟",
+                   cover=poi.photo if poi.photo.startswith("https://") else "")
+
+
+def _sky_short(live: LiveWeather | None, today: DailyForecast | None) -> str:
+    """"小雪-3°C " — weather and temperature for a push headline ("" if unknown)."""
+    if live is not None:
+        return f"{live.weather}{live.temperature_c}°C "
+    if today is not None:
+        return f"{today.day_weather}{today.night_temp_c}~{today.day_temp_c}°C "
+    return ""
 
 
 def format_stay_home_message(
@@ -271,7 +281,7 @@ def format_stay_home_message(
         "今天天气不太适合出门，在家歇一歇吧。",
         "可以泡杯茶、看看剧，或者在屋里活动活动筋骨～",
     ])
-    return Message(title="今天适合在家休息", markdown=md)
+    return Message(title="今天适合在家休息", markdown=md, headline=f"{_sky_short(live, today)}今天在家歇歇")
 
 
 def format_no_route_message(
@@ -283,7 +293,7 @@ def format_no_route_message(
         "",
         "今天没找到特别省力的公交路线，就在家附近散散步、晒晒太阳吧。",
     ])
-    return Message(title="今日出行建议", markdown=md)
+    return Message(title="今日出行建议", markdown=md, headline=f"{_sky_short(live, today)}附近散散步")
 
 
 def amap_search_url(keyword: str, city: str) -> str:
@@ -313,7 +323,8 @@ def format_place_without_route(
     ])
     article = Article(f"{name}{greeting}，今天去{place.name}走走？",
                       f"{place.category} · {where}\n{place.description}\n点开看出行贴士 ›", nav)
-    return Message(title=f"今日出行建议 · {place.name}", markdown=md, url=nav, articles=(article,))
+    return Message(title=f"今日出行建议 · {place.name}", markdown=md, url=nav, articles=(article,),
+                   headline=f"去{place.name}走走？")
 
 
 # ------------------------------------------------------------------ events
@@ -436,8 +447,10 @@ def format_events_message(
         tips.append("晚上的演出散场晚，回家建议打车，或让家人来接")
     tips.append("带好手机、水杯和常用药，累了就找地方坐一坐")
     lines += ["**💡 小贴士**", *[f"- {t}" for t in tips]]
+    photo = next((p.poi.photo for p in picks if p.poi.photo.startswith("https://")), "")
     return Message(title=f"近期活动 · {picks[0].event.title}", markdown="\n".join(lines),
-                   url=articles[0].url, articles=tuple(articles))
+                   url=articles[0].url, articles=tuple(articles),
+                   headline=f"{len(picks)}个活动：{picks[0].event.title}", cover=photo)
 
 
 # --------------------------------------------------------------- orchestration

@@ -225,6 +225,23 @@ ssh-copy-id root@<server-ip>
 Each deploy unpacks into a fresh directory (the previous one is kept as `/root/zcare.prev` for
 rollback), keeps the server's `.env` unless `--push-env`, and fails loudly if `/health` doesn't come up.
 
+## Normal WeChat via PushPlus
+
+WeCom's 微信插件 isn't available for this account, so scheduled messages can also go to normal WeChat
+through [PushPlus](https://www.pushplus.plus) (its 服务号 "pushplus 推送加"; pin it in WeChat so it stays on top).
+
+- `DELIVERY_CHANNELS=wecom,pushplus` sends every scheduled message to both; a failing channel is reported
+  under ❗ 异常 in the daily report but doesn't stop the other. Chat and on-demand replies stay in WeCom.
+- The notification shows only ~12 characters of the title (emoji dropped), so each message has a
+  `headline` with the key fact first: 「局部缓行 车程22分钟」, 「今晚5条本地新闻：…」, 「好剧3部：《…》」.
+- Tapping opens the full message as a large-font page with the AMap / 阅读原文 buttons. Images must be
+  `https`: 公众号 covers load straight from WeChat's CDN (no Referer); images from this server (`http`)
+  are blocked by the https page, so drama posters aren't shown there.
+- Recipients: Dad/Mom scan your PushPlus QR, then put their 好友令牌 in `FATHER_PUSHPLUS_TO` /
+  `MOTHER_PUSHPLUS_TO`. Empty = you (the token owner) — handy for testing.
+- Free tier (real-name verified): 200 requests/day, 5/minute — zcare uses ~5/day. `code 200` only means
+  PushPlus accepted the message. Content passes through PushPlus's servers (history kept 30 days).
+
 ## Data safety & monitoring
 
 - **State files can't silently reset.** `data/state.json` (sent dramas/news, preferences) and

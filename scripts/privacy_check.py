@@ -4,7 +4,7 @@
 Checks the files staged for commit (or, with --all, every tracked file) against:
   * every value in `.env` with 8+ characters (API keys, WeCom secrets, home/work coordinates and
     addresses, user ids …) — except values that also appear in `.env.example` (public defaults such as
-    `Asia/Shanghai` or a cron string);
+    `Asia/Shanghai`, a cron string, or an example in a comment);
   * the server address in `.deploy.env` (the IP/host on its own, too);
   * regex patterns in the git-ignored `.privacy-patterns` file (one per line, `#` comments; the patterns
     themselves are personal, so they never enter git) — e.g. family names, the neighbourhood, phone numbers.
@@ -40,7 +40,9 @@ def env_values(path: Path) -> dict[str, str]:
 
 
 def load_secrets() -> dict[str, str]:
-    public = set(env_values(ROOT / ".env.example").values())
+    example = ROOT / ".env.example"
+    public = example.read_text(encoding="utf-8", errors="ignore") if example.exists() else ""
+    # values written anywhere in .env.example (defaults, or examples in comments) are public
     secrets = {f".env {k}": v for k, v in env_values(ROOT / ".env").items() if len(v) >= MIN_LEN and v not in public}
     for k, v in env_values(ROOT / ".deploy.env").items():
         secrets[f".deploy.env {k}"] = v

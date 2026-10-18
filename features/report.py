@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 JOB_NAMES = {"commute": "爸爸早间路况", "outing": "妈妈出行推荐", "tv": "周五好剧", "digest": "晚间本地新闻"}
 INTENT_CN = {"traffic": "路况", "weather": "天气", "outing": "出行/活动", "tv": "电视剧", "chat": "闲聊",
              "urgent": "⚠️紧急", "feedback": "反馈", "news": "新闻", "help": "帮助", "commute": "路况", "admin": "管理"}
+CHANNEL_CN = {"wecom": "企业微信", "pushplus": "PushPlus"}
 PURPOSE_CN = {"chat": "对话", "extract": "文章提取", "digest": "新闻小报"}
 TARGET_CN = {"venue": "场馆", "category": "类别"}
 REASON_CN = {"too_far": "太远", "visited": "去过了", "not_interested": "不感兴趣", "like": "喜欢"}
@@ -31,6 +32,8 @@ def build_daily_report(entries: list[dict[str, Any]], now: datetime, names: dict
     for e in by["sent"]:
         status = "已跳过（今天没什么要说）" if e.get("skipped") else ("备用问候" if e.get("fallback") else
                                                               ("✓" if e.get("ok") else "✘ 失败"))
+        if e.get("ok") and not e.get("skipped") and len(e.get("channels") or []) > 1:
+            status += "（" + "+".join(CHANNEL_CN.get(c, c) for c in e["channels"]) + "）"
         sent_ok += bool(e.get("ok")) and not e.get("skipped")
         sent_fallback += bool(e.get("fallback"))
         sent_skipped += bool(e.get("skipped"))

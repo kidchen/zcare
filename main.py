@@ -32,6 +32,7 @@ from bot import ChatBot, Command
 from clients.amap_client import AmapClient
 from clients.llm_client import LLMClient
 from clients.nmc_client import NmcClient
+from clients.pushplus_client import PushPlusClient
 from clients.wecom_callback import (
     CallbackFormatError,
     build_passive_reply,
@@ -52,7 +53,8 @@ from features.digest import DigestBuilder, format_digest_message
 from features.events import EventFinder
 from features.outing import build_outing_message
 from features.preferences import FEEDBACK_KEYWORDS, PreferenceStore
-from features.report import build_daily_report
+from features.push import push_title, render_push_html
+from features.report import CHANNEL_CN, JOB_NAMES, build_daily_report
 from features.tv_recommend import PosterCache, build_tv_message
 from features.weather import build_weather_message
 from messages import Message, add_notices, markdown_to_text
@@ -72,6 +74,7 @@ class Services:
     details: DetailStore | None = None  # H5 detail pages behind news cards
     prefs: PreferenceStore | None = None  # tastes learned from chat feedback
     activity: ActivityLog | None = None  # data/activity.jsonl → daily admin report
+    pushplus: PushPlusClient | None = None  # scheduled messages to normal WeChat (DELIVERY_CHANNELS)
 
     def record(self, type_: str, **fields) -> None:
         if self.activity is not None:
@@ -105,8 +108,9 @@ def get_services() -> Services:
         llm.on_call = lambda **k: activity.record("llm", **k)
     if events is not None:
         events.on_stats = lambda **k: activity.record("extract", **k)
+    pushplus = PushPlusClient(s.pushplus_token) if s.pushplus_token else None
     return Services(s, AmapClient(s.amap_key), wecom, state, posters, events, details, PreferenceStore(state),
-                    activity)
+                    activity, pushplus)
 
 
 def role_of(s: Settings, userid: str) -> str:
@@ -120,10 +124,46 @@ JOB_AUDIENCE = {"commute": "father", "outing": "mother", "tv": "father", "digest
 
 
 def deliver(sv: Services, recipients: list[str], message: Message) -> None:
-    """Send a feature message; news/textcard cards that would open AMap open a detail page instead."""
+    """Send a feature message via WeCom; news/textcard cards that would open AMap open a detail page instead."""
     if sv.details is not None and sv.settings.wecom_message_type in ("news", "textcard"):
         message = sv.details.publish(message)
     sv.wecom.send_message(recipients, message, sv.settings.wecom_message_type)
+
+
+def push(sv: Services, to: list[str], message: Message) -> None:
+    """PushPlus: one request for the owner ("" — you, while testing), one for all friend tokens."""
+    title, page = push_title(message), render_push_html(message)
+    if "" in to:
+        sv.pushplus.send(title, page)
+    friends = [t for t in to if t]
+    if friends:
+        sv.pushplus.send(title, page, to=friends)
+
+
+def deliver_scheduled(sv: Services, name: str, job: Job, message: Message) -> list[str]:
+    """Send a scheduled message to every configured channel → channels that succeeded.
+    A failing channel is reported (daily report) but doesn't stop the others; raises only if ALL failed."""
+    ok: list[str] = []
+    errors: list[Exception] = []
+    for channel in sv.settings.delivery_channels:
+        try:
+            if channel == "wecom":
+                if sv.wecom is None:
+                    raise RuntimeError("WeCom is not configured")
+                deliver(sv, job.recipients(sv.settings), message)
+            elif channel == "pushplus":
+                if sv.pushplus is None:
+                    raise RuntimeError("PushPlus is not configured")
+                push(sv, job.pushplus_to(sv.settings), message)
+            ok.append(channel)
+        except Exception as exc:  # noqa: BLE001 — one channel down must not cost the other
+            log.warning("job %s: %s delivery failed: %s", name, channel, exc)
+            sv.record("error", what=f"{JOB_NAMES.get(name, name)}·{CHANNEL_CN.get(channel, channel)}",
+                      error=repr(exc)[:200])
+            errors.append(exc)
+    if not ok:
+        raise errors[0] if errors else RuntimeError("no delivery channel configured")
+    return ok
 
 
 @lru_cache(maxsize=1)
@@ -143,8 +183,16 @@ def get_llm() -> LLMClient | None:
 @dataclass(frozen=True)
 class Job:
     build: Callable[[Services, bool], Message | None]  # (services, record_state) -> Message (None = skip today)
-    recipients: Callable[[Settings], list[str]]
+    roles: Callable[[Settings], list[str]]  # audience: "father" / "mother"
     cron: Callable[[Settings], str]
+
+    def recipients(self, s: Settings) -> list[str]:
+        """WeCom user ids (one person in both roles gets it once)."""
+        return list(dict.fromkeys(u for r in self.roles(s) if (u := s.member(r).wecom_userid)))
+
+    def pushplus_to(self, s: Settings) -> list[str]:
+        """PushPlus 好友令牌, deduplicated; "" = the token owner (you, while testing)."""
+        return list(dict.fromkeys(s.member(r).pushplus_to for r in self.roles(s)))
 
 
 def build_commute_job(sv: Services, record: bool) -> Message | None:
@@ -177,14 +225,10 @@ def build_digest(sv: Services, record: bool, name: str = "爸爸妈妈", greetin
                                  cover=sv.posters.article_cover if sv.posters is not None else None)
 
 
-def _parents(s: Settings) -> list[str]:
-    return list(dict.fromkeys(u for u in (s.father.wecom_userid, s.mother.wecom_userid) if u))
-
-
 JOBS: dict[str, Job] = {
     "commute": Job(
         build=build_commute_job,
-        recipients=lambda s: [s.father.wecom_userid],
+        roles=lambda s: ["father"],
         cron=lambda s: s.commute_cron,
     ),
     "outing": Job(
@@ -192,17 +236,17 @@ JOBS: dict[str, Job] = {
             sv.amap, sv.settings, sv.state, sv.now().date(), record=record, events=sv.events,
             prefs=sv.prefs, remember=record,
         ),
-        recipients=lambda s: [s.mother.wecom_userid],
+        roles=lambda s: ["mother"],
         cron=lambda s: s.outing_cron,
     ),
     "tv": Job(
         build=lambda sv, record: build_tv_message(sv.settings, sv.state, record=record, posters=sv.posters),
-        recipients=lambda s: [s.member(r).wecom_userid for r in s.tv_recipients],
+        roles=lambda s: list(s.tv_recipients),
         cron=lambda s: s.tv_cron,
     ),
     "digest": Job(
         build=build_digest,
-        recipients=_parents,
+        roles=lambda s: ["father", "mother"],
         cron=lambda s: s.digest_cron,
     ),
 }
@@ -266,13 +310,12 @@ def run_job(name: str, dry_run: bool | None = None) -> dict:
         sent = False
         if dry:
             log.info("[dry-run] %s → %s\n%s", name, recipients, message.markdown)
-        elif sv.wecom is None:
-            raise RuntimeError("WeCom is not configured")
         else:
-            deliver(sv, recipients, message)
+            channels = deliver_scheduled(sv, name, job, message)
             sent = True
-            log.info("sent %s to %s", name, recipients)
-            sv.record("sent", job=name, to=JOB_AUDIENCE.get(name, ""), ok=True, fallback=used_fallback)
+            log.info("sent %s to %s via %s", name, recipients, ",".join(channels))
+            sv.record("sent", job=name, to=JOB_AUDIENCE.get(name, ""), ok=True, fallback=used_fallback,
+                      channels=channels)
     except Exception as exc:
         log.exception("job %s failed", name)
         if not dry:

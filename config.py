@@ -17,6 +17,7 @@ if os.getenv("ZCARE_SKIP_DOTENV") != "1":  # tests set this so a real .env never
     load_dotenv(PROJECT_ROOT / ".env")
 
 VALID_MESSAGE_TYPES = ("markdown", "text", "news", "textcard")
+VALID_CHANNELS = ("wecom", "pushplus")
 
 
 class ConfigError(RuntimeError):
@@ -81,6 +82,7 @@ class Location:
 class FamilyMember:
     display_name: str  # how messages address them, e.g. 爸爸
     wecom_userid: str  # WeCom member UserID (通讯录 → 成员 → 账号)
+    pushplus_to: str = ""  # PushPlus 好友令牌 (empty = the PUSHPLUS_TOKEN owner, i.e. you — for testing)
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,9 @@ class Settings:
     admin_token: str
     state_file: Path
     log_level: str
+    # --- Delivery: scheduled messages go to every channel listed; chat / on-demand replies stay in WeCom ---
+    pushplus_token: str = ""  # pushplus.plus token (real-name verified account)
+    delivery_channels: tuple[str, ...] = ("wecom",)
 
     def member(self, role: str) -> FamilyMember:
         if role == "father":
@@ -192,6 +197,12 @@ def load_settings() -> Settings:
             "DEEPSEEK_API_KEY is no longer read; set LLM_API_KEY (and LLM_PROVIDER) instead"
         )
 
+    channels = tuple(dict.fromkeys(c.lower() for c in _env_list("DELIVERY_CHANNELS", "wecom")))
+    if not channels or not set(channels) <= set(VALID_CHANNELS):
+        raise ConfigError(f"DELIVERY_CHANNELS must be a comma-separated subset of {VALID_CHANNELS}")
+    if "pushplus" in channels and not _env("PUSHPLUS_TOKEN"):
+        raise ConfigError("DELIVERY_CHANNELS includes pushplus but PUSHPLUS_TOKEN is empty")
+
     callback_token = _env("WECOM_CALLBACK_TOKEN")
     aes_key = _env("WECOM_ENCODING_AES_KEY")
     if bool(callback_token) != bool(aes_key):
@@ -220,8 +231,8 @@ def load_settings() -> Settings:
         wecom_message_type=message_type,
         wecom_callback_token=callback_token,
         wecom_encoding_aes_key=aes_key,
-        father=FamilyMember(_env("FATHER_NAME", "爸爸"), _env("FATHER_WECOM_USERID")),
-        mother=FamilyMember(_env("MOTHER_NAME", "妈妈"), _env("MOTHER_WECOM_USERID")),
+        father=FamilyMember(_env("FATHER_NAME", "爸爸"), _env("FATHER_WECOM_USERID"), _env("FATHER_PUSHPLUS_TO")),
+        mother=FamilyMember(_env("MOTHER_NAME", "妈妈"), _env("MOTHER_WECOM_USERID"), _env("MOTHER_PUSHPLUS_TO")),
         admin_userid=_env("ADMIN_WECOM_USERID"),
         father_home=father_home,
         father_work=Location.parse("FATHER_WORK", "单位", _env("FATHER_WORK")),
@@ -275,6 +286,8 @@ def load_settings() -> Settings:
         admin_token=_env("ADMIN_TOKEN"),
         state_file=state_file,
         log_level=_env("LOG_LEVEL", "INFO").upper(),
+        pushplus_token=_env("PUSHPLUS_TOKEN"),
+        delivery_channels=channels,
     )
     for role in settings.tv_recipients:
         settings.member(role)  # validates role names early

@@ -103,7 +103,8 @@ def format_commute_message(
     summary.append(f"天气：{live.weather} {live.temperature_c}°C" + (f"，{today.night_temp_c}~{today.day_temp_c}°C" if today else ""))
     summary.append("点开看完整路况和提醒 ›")
     articles = (Article(title, "\n".join(summary), nav_url),) if nav_url else ()
-    return Message(title=title, markdown="\n".join(lines), url=nav_url, articles=articles)
+    return Message(title=title, markdown="\n".join(lines), url=nav_url, articles=articles,
+                   headline=f"{label} 车程{minutes}分钟")
 
 
 def format_commute_unavailable(
@@ -122,7 +123,8 @@ def format_commute_unavailable(
     title = f"{name}{greeting} · 今日路况"
     article = (Article(title, f"实时路况暂时没查到\n天气：{format_weather(live, today)}\n点开看详情 ›", nav_url),
                ) if nav_url else ()
-    return Message(title=title, markdown="\n".join(lines), url=nav_url, articles=article)
+    return Message(title=title, markdown="\n".join(lines), url=nav_url, articles=article,
+                   headline="今日路况暂未查到 出门前看一眼")
 
 
 def _weather(amap: AmapClient, settings: Settings) -> tuple[LiveWeather | None, DailyForecast | None]:
@@ -181,4 +183,5 @@ def build_offday_greeting(
         "",
         "今天不用上班，好好歇歇～",
     ])
-    return add_notices(Message(title=f"{name}早上好 · {wish}", markdown=md), notices)
+    return add_notices(Message(title=f"{name}早上好 · {wish}", markdown=md,
+                               headline=f"今天休息 有{len(notices)}条提醒"), notices)

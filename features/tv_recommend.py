@@ -478,7 +478,7 @@ def format_tv_message(
     this_year = this_year or date.today().year
     if not dramas:
         md = f"**周末追剧推荐 📺**\n\n{name}，这周没找到新的高分剧，可以重温一下喜欢的老剧～"
-        return Message(title="周末追剧推荐", markdown=md)
+        return Message(title="周末追剧推荐", markdown=md, headline="这周没有新的高分剧")
     lines = [f"**{name}，给您挑了几部好剧 📺**", ""]
     for i, d in enumerate(dramas, start=1):
         meta = [f"⭐ {d.rating:.1f}"]
@@ -499,6 +499,7 @@ def format_tv_message(
         url=MOBILE_PAGE_URL.format(id=dramas[0].subject_id),
         articles=tuple(drama_article(d, i, picurl_for(d), watch_note(d, platform, app), is_new(d, this_year))
                        for i, d in enumerate(dramas, start=1)),
+        headline=f"好剧{len(dramas)}部：《{dramas[0].title}》",  # posters: Douban blocks off-site → no cover
     )
 
 

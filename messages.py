@@ -43,6 +43,9 @@ class Message:
     markdown: str
     url: str | None = None  # used by textcard / "open in AMap" links
     articles: tuple[Article, ...] = ()  # one per item (e.g. per drama) for news cards
+    # Push notifications (PushPlus) show only ~12 characters of the title, emoji dropped: the key fact first.
+    headline: str = ""  # e.g. "路况整体畅通 车程22分钟"; empty = derived from title
+    cover: str = ""  # optional https image for the push page (loaded with no Referer)
 
     @property
     def text(self) -> str:
