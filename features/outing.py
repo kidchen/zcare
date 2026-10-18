@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Protocol
 
@@ -37,6 +37,7 @@ from config import Settings
 from features.commute import format_weather
 from features.daytype import DayInfo, day_info, off_days
 from features.events import EventFinder, LocalEvent, notice_lines
+from features.parks import add_parks, nearby_parks, pick_parks
 from features.preferences import PreferenceStore
 from messages import Article, Message, add_notices, amap_nav_url
 from storage import StateStore
@@ -128,6 +129,29 @@ def parse_event_list(html: str, selector: str, venue: str, indoor: bool = True) 
 
 STAY_HOME_KEYWORDS = ("暴雨", "暴雪", "大暴", "沙尘暴", "冰雹", "雷阵雨")
 INDOOR_KEYWORDS = ("雨", "雪", "雾", "霾", "沙", "尘")
+
+
+PARK_MIN_DAY_HIGH_C = 8
+
+
+def park_weather_tip(live: LiveWeather | None, today: DailyForecast | None) -> str | None:
+    """Closing tip for the parks section, or None when it's no day for a walk outside (rain, snow,
+    dust, wind ≥ 5, heat). A cold MORNING is fine if the day warms up: then the tip says go at noon."""
+    if live is None and today is None:
+        return None
+    sky = (live.weather if live else "") + (today.day_weather if today else "")
+    wind = max(_wind_level(live.wind_power) if live else 0, _wind_level(today.day_wind_power) if today else 0)
+    if any(k in sky for k in INDOOR_KEYWORDS) or wind >= 5:
+        return None
+    now = live.temperature_c if live else None
+    high = today.day_temp_c if today else now
+    if (high is not None and high >= 32) or (now is not None and now >= 32):
+        return None
+    if now is not None and now <= 3:
+        if high is None or high < PARK_MIN_DAY_HIGH_C:
+            return None
+        return f"早上还冷，中午暖和了（最高 {high}°C）再去走走，穿厚点、戴好帽子～"
+    return "去公园走一圈，活动活动筋骨，累了就找个长椅歇一歇～"
 
 
 def _wind_level(power: str) -> int:
@@ -447,10 +471,10 @@ def format_events_message(
         tips.append("晚上的演出散场晚，回家建议打车，或让家人来接")
     tips.append("带好手机、水杯和常用药，累了就找地方坐一坐")
     lines += ["**💡 小贴士**", *[f"- {t}" for t in tips]]
-    photo = next((p.poi.photo for p in picks if p.poi.photo.startswith("https://")), "")
     return Message(title=f"近期活动 · {picks[0].event.title}", markdown="\n".join(lines),
                    url=articles[0].url, articles=tuple(articles),
-                   headline=f"{len(picks)}个活动：{picks[0].event.title}", cover=photo)
+                   headline=f"{len(picks)}个活动：{picks[0].event.title}",
+                   item_images=tuple(p.poi.photo for p in picks))
 
 
 # --------------------------------------------------------------- orchestration
@@ -488,10 +512,22 @@ def build_outing_message(
     remember: bool = False,
 ) -> Message:
     """Never raises for feed / map / network problems: degrades to curated places + official warnings."""
+    ctx: dict = {}
     message = _build_outing_message(amap, settings, state, today, event_sources, record, name, greeting, events,
-                                    prefs, remember)
+                                    prefs, remember, ctx)
     # Real-time reminders (cold snap, heating, water cuts...) on every outing message, incl. stay-home.
-    return add_notices(message, notice_lines(events, today, "mother"))
+    message = add_notices(message, notice_lines(events, today, "mother"))
+    park_tip = park_weather_tip(ctx.get("live"), ctx.get("forecast")) if ctx.get("advice") != "home" else None
+    if park_tip is not None:  # fine for a walk outside (maybe only later in the day) → parks near home, too
+        try:
+            parks = pick_parks(nearby_parks(amap, settings.mother_home, state), today, prefs,
+                               exclude=tuple(ctx.get("venues", ())))
+            message = add_parks(message, parks, settings.mother_home, tip=park_tip)
+            if parks and ctx.get("no_suggestion"):
+                message = replace(message, headline=f"{_sky_short(ctx.get('live'), ctx.get('forecast'))}去{parks[0].name}走走")
+        except Exception as exc:  # noqa: BLE001 — the park section is optional
+            log.warning("nearby parks section skipped: %s", exc)
+    return message
 
 
 def _build_outing_message(
@@ -506,7 +542,9 @@ def _build_outing_message(
     events: EventFinder | None,
     prefs: PreferenceStore | None = None,
     remember: bool = False,
+    ctx: dict | None = None,
 ) -> Message:
+    ctx = {} if ctx is None else ctx  # out: advice, live, forecast, venues (already suggested), no_suggestion
     name = settings.mother.display_name if name is None else name
     info = day_info(today)
     try:
@@ -516,6 +554,7 @@ def _build_outing_message(
         live = None
     forecast = amap.get_today_forecast(settings.city_adcode)
     advice = weather_advice(live, forecast)
+    ctx.update(advice=advice, live=live, forecast=forecast)
     if advice == "home":
         return format_stay_home_message(name, live, forecast, greeting)
     max_minutes = prefs.max_route_minutes() if prefs is not None else None
@@ -533,6 +572,7 @@ def _build_outing_message(
         ranked = rank_events(found, today, info, prefs)
         picks = pick_events(amap, settings, ranked, advice, prefs=prefs, max_minutes=max_minutes)
         if picks:
+            ctx["venues"] = [p.poi.name for p in picks]
             remember_items([{"title": p.event.title, "venue": p.poi.name, "category": p.event.category} for p in picks])
             return format_events_message(
                 name=name, greeting=greeting, picks=picks, live=live, today=forecast,
@@ -567,6 +607,7 @@ def _build_outing_message(
         if record:
             state.remember(STATE_KEY, [place.name], keep=RECENT_KEEP)
         remember_items([{"title": place.name, "venue": poi.name or place.name, "category": place.category}])
+        ctx["venues"] = [poi.name or place.name]
         return format_outing_message(
             name=name, place=place, poi=poi, plan=plan, live=live, today=forecast, advice=advice,
             nav_url=amap_nav_url(home.coords, home.name, poi.location, poi.name or place.name, "bus"),
@@ -576,5 +617,7 @@ def _build_outing_message(
         # The map service itself is failing (not just "no gentle route"): still suggest a classic place.
         place = candidates[0]
         remember_items([{"title": place.name, "venue": place.name, "category": place.category}])
+        ctx["venues"] = [place.name]
         return format_place_without_route(name, place, settings.city_name, live, forecast, greeting)
+    ctx["no_suggestion"] = True
     return format_no_route_message(name, live, forecast, greeting)

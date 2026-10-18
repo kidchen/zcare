@@ -46,6 +46,7 @@ class Message:
     # Push notifications (PushPlus) show only ~12 characters of the title, emoji dropped: the key fact first.
     headline: str = ""  # e.g. "路况整体畅通 车程22分钟"; empty = derived from title
     cover: str = ""  # optional https image for the push page (loaded with no Referer)
+    item_images: tuple[str, ...] = ()  # push page: image i goes under the item heading "**{i+1}. …**"
 
     @property
     def text(self) -> str:

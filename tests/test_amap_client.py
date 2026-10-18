@@ -37,3 +37,23 @@ def test_api_key_is_sent():
     session = FakeSession({"/weather": [FakeResponse(fx.LIVE)]})
     AmapClient("secret-key", session=session).get_live_weather("150100")
     assert session.calls[0][2]["params"]["key"] == "secret-key"
+
+
+def test_calls_are_paced_and_a_qps_error_is_retried_once():
+    import clients.amap_client as ac
+    from tests import fixtures as fx
+    from tests.conftest import FakeResponse, FakeSession
+    now, slept = [100.0], []
+    def sleep(s):
+        slept.append(round(s, 2)); now[0] += s
+    qps = FakeResponse({"status": "0", "info": "CUQPS_HAS_EXCEEDED_THE_LIMIT", "infocode": "10021"})
+    session = FakeSession({"/weather": [qps, FakeResponse(fx.LIVE), FakeResponse(fx.LIVE)]})
+    ac.AmapClient._last_call = 0.0
+    c = ac.AmapClient("k", session=session, min_interval_s=0.34, sleep=sleep, clock=lambda: now[0])
+    assert c.get_live_weather("150100").weather == "晴"      # retried after the QPS error
+    c.get_live_weather("150100")                              # back-to-back call waits for the gap
+    assert len(session.calls) == 3 and 0.34 in slept
+    bad = FakeSession({"/weather": [qps]})
+    with pytest.raises(ac.AmapError):
+        ac.AmapClient("k", session=bad, min_interval_s=0, sleep=sleep).get_live_weather("150100")  # 2nd failure raises
+    assert len(bad.calls) == 2

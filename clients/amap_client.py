@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,6 +135,7 @@ class Poi:
     location: str  # "lng,lat"
     type: str
     photo: str = ""  # public AMap photo URL, if any
+    distance_m: int = 0  # straight-line distance from the search centre (nearby search only)
 
 
 # --------------------------------------------------------------------- parsers
@@ -167,6 +170,13 @@ def poi_name_matches(query: str, poi_name: str) -> bool:
     if len(q) < 4 or len(p) < 4:
         return False
     return _is_subsequence(q, p) or _is_subsequence(p, q)
+
+
+def _photo(p: dict[str, Any]) -> str:
+    """First AMap photo URL, upgraded to https (push pages are https; http images get blocked)."""
+    photos = p.get("photos") if isinstance(p.get("photos"), list) else []
+    photo = next((_s(ph.get("url")) for ph in photos if isinstance(ph, dict) and _s(ph.get("url"))), "")
+    return "https://" + photo[len("http://"):] if photo.startswith("http://") else photo
 
 
 def poi_is_indoor(poi_type: str) -> bool:
@@ -256,22 +266,49 @@ def parse_transit(transit: dict[str, Any]) -> TransitPlan:
 # ---------------------------------------------------------------------- client
 
 
+MIN_INTERVAL_S = 0.34  # personal Web服务 keys allow only a few requests/second (else infocode 10021)
+QPS_LIMIT_CODES = ("10021", "10014", "10015")  # per-key / per-service / per-IP QPS exceeded
+QPS_RETRY_WAIT_S = 1.2
+
+
 class AmapClient:
-    def __init__(self, api_key: str, session: requests.Session | None = None, timeout: float = 8.0):
+    _lock = threading.Lock()  # shared: scheduled jobs and chat requests use the same key
+    _last_call = 0.0
+
+    def __init__(self, api_key: str, session: requests.Session | None = None, timeout: float = 8.0,
+                 min_interval_s: float | None = None, sleep=time.sleep, clock=time.monotonic):
         if not api_key:
             raise ValueError("AMap API key is required")
         self._key = api_key
         self._session = session or build_session()
         self._timeout = timeout
+        self._min_interval = min_interval_s  # None → MIN_INTERVAL_S (read at call time; tests set it to 0)
+        self._sleep, self._clock = sleep, clock
+
+    def _pace(self) -> None:
+        with AmapClient._lock:
+            gap = MIN_INTERVAL_S if self._min_interval is None else self._min_interval
+            wait = AmapClient._last_call + gap - self._clock()
+            if wait > 0:
+                self._sleep(wait)
+            AmapClient._last_call = self._clock()
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         query = {**params, "key": self._key, "output": "JSON"}
-        resp = self._session.get(f"{BASE_URL}{path}", params=query, timeout=self._timeout)
-        resp.raise_for_status()
-        data = resp.json()
-        if str(data.get("status")) != "1":
-            raise AmapError(_s(data.get("info")) or "unknown", _s(data.get("infocode")))
-        return data
+        for attempt in (1, 2):
+            self._pace()
+            resp = self._session.get(f"{BASE_URL}{path}", params=query, timeout=self._timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            if str(data.get("status")) == "1":
+                return data
+            code = _s(data.get("infocode"))
+            if code in QPS_LIMIT_CODES and attempt == 1:
+                log.info("AMap QPS limit (%s) on %s; retrying once", code, path)
+                self._sleep(QPS_RETRY_WAIT_S)
+                continue
+            raise AmapError(_s(data.get("info")) or "unknown", code)
+        raise AssertionError("unreachable")
 
     # -- driving -------------------------------------------------------------
 
@@ -351,6 +388,21 @@ class AmapClient:
 
     # -- places --------------------------------------------------------------
 
+    def search_around(self, location: str, types: str, radius_m: int = 2500, limit: int = 20) -> list[Poi]:
+        """POIs of AMap ``types`` (e.g. 110101 公园 | 110105 城市广场) within ``radius_m``, nearest first."""
+        data = self._get(
+            "/v3/place/around",
+            {"location": location, "types": types, "radius": radius_m, "sortrule": "distance",
+             "offset": min(limit, 25), "page": 1, "extensions": "all"},
+        )
+        out = []
+        for p in data.get("pois") or []:
+            if not isinstance(p, dict) or not _s(p.get("location")) or not _s(p.get("name")):
+                continue
+            out.append(Poi(_s(p.get("name")), _s(p.get("address")), _s(p.get("location")), _s(p.get("type")),
+                           _photo(p), _i(p.get("distance"))))
+        return out
+
     def search_poi(self, keywords: str, city: str, strict: bool = True) -> Poi | None:
         """Keyword POI search restricted to ``city``. With ``strict`` (default) the top hit is
         returned only if its name actually matches ``keywords`` (see poi_name_matches)."""
@@ -369,8 +421,4 @@ class AmapClient:
         if strict and not poi_name_matches(keywords, _s(p.get("name"))):
             log.info("AMap top hit %r does not match %r; ignoring", _s(p.get("name")), keywords)
             return None
-        photos = p.get("photos") if isinstance(p.get("photos"), list) else []
-        photo = next((_s(ph.get("url")) for ph in photos if isinstance(ph, dict) and _s(ph.get("url"))), "")
-        if photo.startswith("http://"):
-            photo = "https://" + photo[len("http://"):]
-        return Poi(_s(p.get("name")), _s(p.get("address")), location, _s(p.get("type")), photo)
+        return Poi(_s(p.get("name")), _s(p.get("address")), location, _s(p.get("type")), _photo(p))

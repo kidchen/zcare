@@ -224,7 +224,7 @@ def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", g
     cards = tuple(Card(title=f"{n}. {it.title}", description=f"{it.summary}\n来源：{it.account}" if it.account
                        else it.summary, url=it.url, picurl=cover(it.image) if (cover and it.image) else "")
                   for n, it in enumerate(items, start=1) if it.url.startswith("http"))
-    cover = next((it.image for it in items if it.image.startswith("https://")), "")  # raw mmbiz URL (push page)
     return Message(title=f"📰 今天呼和浩特的新鲜事（{len(items)}条）", markdown="\n".join(lines).strip(),
                    url=items[0].url or None, articles=cards,
-                   headline=f"今晚{len(items)}条本地新闻：{items[0].title}", cover=cover)
+                   headline=f"今晚{len(items)}条本地新闻：{items[0].title}",
+                   item_images=tuple(it.image for it in items))  # raw mmbiz covers, one per item (push page)

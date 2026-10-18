@@ -84,3 +84,11 @@ def no_real_http(monkeypatch):
     def _blocked(self, request, **kwargs):
         pytest.fail(f"real HTTP request attempted in tests: {request.method} {request.url}")
     monkeypatch.setattr(requests.Session, "send", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _no_amap_pacing(monkeypatch):
+    """Production paces AMap calls (~3/s) and waits before a QPS retry; tests don't need to wait."""
+    import clients.amap_client as amap_client
+    monkeypatch.setattr(amap_client, "MIN_INTERVAL_S", 0.0)
+    monkeypatch.setattr(amap_client, "QPS_RETRY_WAIT_S", 0.0)

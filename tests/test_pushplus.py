@@ -1,4 +1,5 @@
 import dataclasses
+import re
 
 import pytest
 
@@ -44,11 +45,13 @@ def test_push_title_puts_the_headline_first_without_emoji():
     assert push_title(Message("☀️", "")) == "家里的小助手"
 
 
-def test_push_page_inline_styles_buttons_and_only_https_covers():
-    md = "**妈妈早上好 🌷**\n> 🌤 天气：晴 9°C\n\n**1. 新闻标题**\n> 摘要\n[阅读原文](https://mp.weixin.qq.com/s/a)"
+def test_push_page_inline_styles_main_button_and_only_https_covers():
+    md = "**妈妈早上好 🌷**\n> 🌤 天气：晴 9°C\n> 风力 3 级\n\n今天适合出门。\n[📍 打开高德地图导航](https://uri.amap.com/n?a=1&b=2)"
     page = render_push_html(Message("t", md, cover="https://mmbiz.qpic.cn/x/0?wx_fmt=jpeg"))
     assert "<style" not in page and 'class="' not in page                     # inline styles only
-    assert 'href="https://mp.weixin.qq.com/s/a"' in page and "background:#0B57D0" in page
+    assert "#FAF7F0" not in page and "#2563EB" not in page and "border-left" not in page   # old look gone
+    assert page.count("rgba(127,127,127,0.10)") == 1                          # both info lines in ONE panel
+    assert 'href="https://uri.amap.com/n?a=1&amp;b=2"' in page and "background:#07C160" in page  # green main button
     assert 'referrerpolicy="no-referrer"' in page and page.index("<img") > page.index("</h1>")
     assert "<img" not in render_push_html(Message("t", md, cover="http://1.2.3.4:8000/posters/wx1.jpg"))  # mixed content
     assert "&lt;script&gt;" in render_push_html(Message("t", "<script>x</script>"))  # escaped
@@ -65,7 +68,7 @@ def test_feature_headlines_lead_with_the_key_fact(settings):
     items = [dg.DigestItem("供暖开始", "s", "https://mp.weixin.qq.com/s/a", "号", "k", "供暖开始",
                            "https://mmbiz.qpic.cn/c/0?wx_fmt=jpeg")]
     d = dg.format_digest_message(items)
-    assert d.headline == "今晚1条本地新闻：供暖开始" and d.cover.startswith("https://mmbiz.qpic.cn/")
+    assert d.headline == "今晚1条本地新闻：供暖开始" and d.item_images == ("https://mmbiz.qpic.cn/c/0?wx_fmt=jpeg",)
 
 
 class Rec:
@@ -150,3 +153,24 @@ def test_config_validates_delivery_channels(monkeypatch):
     monkeypatch.setenv("MOTHER_PUSHPLUS_TO", "momtoken")
     s = load_settings()
     assert s.delivery_channels == ("pushplus", "wecom") and s.mother.pushplus_to == "momtoken" and s.father.pushplus_to == ""
+
+
+def test_news_items_become_whole_tappable_cards_with_their_own_image():
+    md = ("**爸爸妈妈晚上好 📰 今天呼和浩特的新鲜事**\n\n"
+          "**1. 甲新闻**\n> 甲摘要（来源：新闻天天看）\n[阅读原文](https://mp.weixin.qq.com/s/1)\n\n"
+          "**2. 乙新闻**\n> 乙摘要\n[阅读原文](https://mp.weixin.qq.com/s/2)\n\n"
+          "**3. 丙新闻**\n> 丙摘要\n[阅读原文](https://mp.weixin.qq.com/s/3)\n\n点开就能看原文～")
+    page = render_push_html(Message("t", md, item_images=("https://mmbiz.qpic.cn/1", "http://1.2.3.4/2.jpg",
+                                                          "https://mmbiz.qpic.cn/3")))
+    cards = re.findall(r'<a href="(https://mp\.weixin\.qq\.com/s/\d)"[^>]*>(.*?)</a>', page)
+    assert [u for u, _ in cards] == ["https://mp.weixin.qq.com/s/1", "https://mp.weixin.qq.com/s/2",
+                                     "https://mp.weixin.qq.com/s/3"]
+    assert "mmbiz.qpic.cn/1" in cards[0][1] and "<img" not in cards[1][1] and "mmbiz.qpic.cn/3" in cards[2][1]
+    assert "1. 甲新闻" in cards[0][1] and "甲摘要" in cards[0][1] and "阅读原文 ›" in cards[0][1]
+    assert page.rindex("点开就能看原文") > page.rindex("</a>")   # trailing text is outside the last card
+
+
+def test_drama_items_keep_their_meta_line():
+    md = "**爸爸，给您挑了几部好剧 📺**\n\n**1. 🔥新剧 《漫长的季节》** ⭐ 9.4 ｜ 悬疑\n> 简介\n> 📺 奇异果TV 搜 MCDJJ\n\n看剧别太晚～"
+    page = render_push_html(Message("t", md))
+    assert "⭐ 9.4 ｜ 悬疑" in page and "奇异果TV 搜 MCDJJ" in page and "<a " not in page
