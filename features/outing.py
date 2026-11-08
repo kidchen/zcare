@@ -33,12 +33,14 @@ from clients.amap_client import (
 )
 from clients.http import DESKTOP_UA, build_session
 from clients.llm_client import LLMError
-from config import Settings
+from config import Location, Settings
 from features.commute import format_weather
 from features.daytype import DayInfo, day_info, off_days
 from features.events import EventFinder, LocalEvent, notice_lines
 from features.parks import add_parks, nearby_parks, pick_parks
 from features.preferences import PreferenceStore
+from features.reach import Reach, clean_line_name, drive_line, get_reach, hard_reach_lines, hard_route_line
+from features.reach import pick_gentlest_plan as _pick_gentlest_plan
 from messages import Article, Message, add_notices, amap_nav_url
 from storage import StateStore
 
@@ -177,11 +179,7 @@ def weather_advice(live: LiveWeather | None, today: DailyForecast | None) -> str
 # ------------------------------------------------------------------ routing
 
 
-def pick_gentlest_plan(
-    plans: Iterable[TransitPlan], max_transfers: int, max_walk_m: int
-) -> TransitPlan | None:
-    ok = [p for p in plans if p.rides >= 1 and p.transfers <= max_transfers and p.walking_m <= max_walk_m]
-    return min(ok, key=lambda p: (p.transfers, p.walking_m // 200, p.duration_s), default=None)
+pick_gentlest_plan = _pick_gentlest_plan  # kept here for existing callers
 
 
 def order_candidates(
@@ -207,9 +205,7 @@ def order_candidates(
     return events + rest
 
 
-def _clean_line_name(name: str) -> str:
-    # "12路(火车站--东客站)" → "12路"
-    return re.split(r"[（(]", name, maxsplit=1)[0].strip() or name
+_clean_line_name = clean_line_name  # shared with features/reach.py
 
 
 def _round_m(meters: int) -> int:
@@ -295,6 +291,31 @@ def _sky_short(live: LiveWeather | None, today: DailyForecast | None) -> str:
     return ""
 
 
+def format_hard_outing_message(
+    *, name: str, place: Place, poi: Poi, reach: Reach, home: Location, live: LiveWeather | None,
+    today: DailyForecast | None, advice: str, greeting: str = "早上好",
+) -> Message:
+    """A good place without an easy bus route: still suggested, with the honest way to get there."""
+    where = "室内" if place.indoor else "户外"
+    place_name = poi.name or place.name
+    lines = [
+        f"**{name}{greeting} 🌷 今天出去走走？**",
+        f"> 📍 推荐：**{place_name}**（{place.category} · {where}）",
+        f"> {place.description}",
+        f"> 🌤 天气：{format_weather(live, today)}",
+        "",
+        "**怎么去**",
+        *hard_reach_lines(reach, home, poi),
+        "",
+        "**💡 小贴士**",
+        *[f"- {t}" for t in gentle_tips(advice, live, None)],
+    ]
+    return Message(title=f"今日出行建议 · {place_name}", markdown="\n".join(lines),
+                   url=amap_nav_url(home.coords, home.name, poi.location, place_name, "car"),
+                   headline=f"去{place_name}？公交不太方便",
+                   cover=poi.photo if poi.photo.startswith("https://") else "")
+
+
 def format_stay_home_message(
     name: str, live: LiveWeather | None, today: DailyForecast | None, greeting: str = "早上好"
 ) -> Message:
@@ -359,6 +380,7 @@ class EventPick:
     event: LocalEvent
     poi: Poi
     plan: TransitPlan | None  # None = no gentle bus route
+    reach: Reach | None = None  # set when there's no gentle route: best transit + driving time
 
 
 NO_GENTLE_ROUTE = "公交要多次换乘或走路较多，建议打车，或让家人开车送"
@@ -402,7 +424,7 @@ def pick_events(
 ) -> list[EventPick]:
     """Resolve each event's venue on AMap (must be a real Hohhot place) and find a gentle route."""
     picks: list[EventPick] = []
-    venues: dict[str, tuple[Poi | None, TransitPlan | None]] = {}
+    venues: dict[str, tuple[Poi | None, Reach | None]] = {}
     home = settings.mother_home
     for event in events[:MAX_EVENTS_TRIED]:
         if len(picks) >= MAX_EVENTS_SHOWN:
@@ -410,17 +432,13 @@ def pick_events(
         if event.venue not in venues:
             try:
                 poi = amap.search_poi(event.venue, settings.city_name)
-                plan = None
-                if poi is not None:
-                    plans: list[TransitPlan] = []
-                    for strategy in (2, 3):
-                        plans += amap.get_transit_routes(home.coords, poi.location, settings.city_name, strategy)
-                    plan = pick_gentlest_plan(plans, settings.outing_max_transfers, settings.outing_max_walk_m)
+                reach = get_reach(amap, settings, home, poi) if poi is not None else None
             except (AmapError, requests.RequestException) as exc:
                 log.warning("AMap lookup failed for venue %s: %s", event.venue, exc)
-                poi, plan = None, None
-            venues[event.venue] = (poi, plan)
-        poi, plan = venues[event.venue]
+                poi, reach = None, None
+            venues[event.venue] = (poi, reach)
+        poi, reach = venues[event.venue]
+        plan = reach.gentle if reach is not None else None
         if poi is None:
             log.info("event dropped (venue not found on AMap): %s @ %s", event.title, event.venue)
             continue
@@ -428,9 +446,9 @@ def pick_events(
             continue
         if prefs is not None and prefs.venue_blocked(poi.name):
             continue
-        if max_minutes is not None and (plan is None or plan.duration_s > max_minutes * 60):
+        if max_minutes is not None and (reach is None or (reach.minutes or 10**6) > max_minutes):
             continue  # they told us places like this are too far
-        picks.append(EventPick(event, poi, plan))
+        picks.append(EventPick(event, poi, plan, None if plan is not None else reach))
     return picks
 
 
@@ -455,11 +473,13 @@ def format_events_message(
     for i, p in enumerate(picks, start=1):
         ev = p.event
         price = f" · 💰 {ev.price}" if ev.price else ""
-        route = route_summary(p.plan) if p.plan else NO_GENTLE_ROUTE
+        route = route_summary(p.plan) if p.plan else (hard_route_line(p.reach) if p.reach else NO_GENTLE_ROUTE)
         new = "🆕 " if ev.fresh else ""  # newly announced in today's local news
         nav = amap_nav_url(home_coords, home_name, p.poi.location, p.poi.name, "bus")
-        lines += [f"**{i}. {new}{ev.title}**", f"> 🗓 {ev.when()} · 📍 {p.poi.name}{price}", f"> 🚌 {route}",
-                  f"[📍 导航去{p.poi.name}]({nav})", ""]
+        lines += [f"**{i}. {new}{ev.title}**", f"> 🗓 {ev.when()} · 📍 {p.poi.name}{price}", f"> 🚌 {route}"]
+        if p.plan is None and p.reach is not None:
+            lines.append(f"> 🚗 {drive_line(p.reach)}")
+        lines += [f"[📍 导航去{p.poi.name}]({nav})", ""]
         articles.append(Article(
             title=f"{new}{ev.when()} {ev.title}",
             description="\n".join([f"📍 {p.poi.name}{price}", f"🚌 {route}", "点开看详情、路线和贴士 ›"]),
@@ -584,6 +604,7 @@ def _build_outing_message(
     candidates = order_candidates(_gather_places(sources), today, advice, state.recent(STATE_KEY), prefs)
     home = settings.mother_home
     map_failures = 0
+    hard: tuple[Place, Poi, list[TransitPlan]] | None = None  # first good place without an easy bus route
 
     for place in candidates[:MAX_CANDIDATES_TRIED]:
         try:
@@ -603,6 +624,8 @@ def _build_outing_message(
             plan = None
         if plan is None:
             log.info("no gentle route to %s", place.name)
+            if hard is None and max_minutes is None:  # "too far" feedback → don't push hard trips
+                hard = (place, poi, plans)
             continue
         if record:
             state.remember(STATE_KEY, [place.name], keep=RECENT_KEEP)
@@ -613,6 +636,15 @@ def _build_outing_message(
             nav_url=amap_nav_url(home.coords, home.name, poi.location, poi.name or place.name, "bus"),
             greeting=greeting,
         )
+    if hard is not None:  # nothing easy today: still suggest the best place, honestly
+        place, poi, plans = hard
+        reach = get_reach(amap, settings, home, poi, plans=plans)
+        if record:
+            state.remember(STATE_KEY, [place.name], keep=RECENT_KEEP)
+        remember_items([{"title": place.name, "venue": poi.name or place.name, "category": place.category}])
+        ctx["venues"] = [poi.name or place.name]
+        return format_hard_outing_message(name=name, place=place, poi=poi, reach=reach, home=home, live=live,
+                                          today=forecast, advice=advice, greeting=greeting)
     if candidates and map_failures:
         # The map service itself is failing (not just "no gentle route"): still suggest a classic place.
         place = candidates[0]

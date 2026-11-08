@@ -228,6 +228,6 @@ def test_run_llm_chat_pushes_reply_then_data_via_send_api(monkeypatch, settings,
     monkeypatch.setattr(main, "get_bot", lambda b=ChatBot(["dad"], llm_enabled=True): b)
     a = FamilyAssistant(OneShot({"intent": "chat", "reply": "爸爸，我帮您看看～"}))
     monkeypatch.setattr(main, "get_assistant", lambda: a)
-    monkeypatch.setattr(main, "build_on_demand_message", lambda sv, cmd, name, record=False: Message(f"data:{cmd.value}", "md"))
+    monkeypatch.setattr(main, "build_on_demand_message", lambda sv, cmd, name, record=False, **kw: Message(f"data:{cmd.value}", "md"))
     main.run_llm_chat("dad", "今天有什么活动？")
     assert rec.sent == [("text", "爸爸，我帮您看看～"), (s.wecom_message_type, "data:outing")]

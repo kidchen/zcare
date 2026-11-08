@@ -24,6 +24,7 @@ import requests
 
 from bot import ACK_TEXT, HELP_TEXT, Command, parse_command
 from clients.llm_client import LLMClient, LLMError
+from features.area import verified_place
 
 log = logging.getLogger(__name__)
 
@@ -77,13 +78,15 @@ feedback：对推荐过的地方或活动表达喜好，如「这个太远了」
 5. urgent（身体）：一律按严重情况处理，不要建议先休息观察。两三句短话，第一句就让对方马上拨打120，如「（称呼），请马上拨打 120！先坐下别走动，把门打开，我已经通知孩子了。」
 6. urgent（诈骗）：和身体不适是两回事，不提 120。如「（称呼），先别转账，也别把验证码告诉任何人！先给孩子打个电话问清楚，我也已经通知孩子了。」你不是孩子，不要说「给我打电话」。
 7. 被问你是谁：说你是孩子设置的小助手，名字是 Context 里的 Assistant。
-8. feedback：温暖地确认，不要争辩。嫌远、去过、不喜欢时说「好的，记下了，以后少给您推荐这类」；喜欢时说「好的，记下了，以后多给您找这样的」。feedback 字段里 reason 必填：too_far（太远）、visited（去过了）、not_interested（不喜欢）、like（喜欢）；value 写对方提到的场馆或类别，没提就留空。
-9. Context 里如有 Notes，是今天已核实的本地提醒（降温、供暖、道路封闭等）。和对方的话相关时可以顺带提一句；不相关就不提。绝不编造 Notes 以外的新闻。
+8. outing：如果对方提到了具体地点或区域（如「大黑河那边」「大召附近」），在 place 字段写这个地点，照抄对方的原话。
+9. feedback：温暖地确认，不要争辩。嫌远、去过、不喜欢时说「好的，记下了，以后少给您推荐这类」；喜欢时说「好的，记下了，以后多给您找这样的」。feedback 字段里 reason 必填：too_far（太远）、visited（去过了）、not_interested（不喜欢）、like（喜欢）；value 写对方提到的场馆或类别，没提就留空。
+10. Context 里如有 Notes，是今天已核实的本地提醒（降温、供暖、道路封闭等）。和对方的话相关时可以顺带提一句；不相关就不提。绝不编造 Notes 以外的新闻。
 </rules>
 
 <output>
 只输出一个 JSON 对象，不要任何其他内容：
 {"intent": "traffic|weather|news|outing|tv|chat|urgent|feedback", "reply": "给对方的回复"}
+intent 为 outing 且提到了地点时再加：{"intent": "outing", "reply": "…", "place": "对方说的地点"}
 只有 intent 为 feedback 时再加：
 {"intent": "feedback", "reply": "…", "feedback": {"reason": "too_far|visited|not_interested|like", "value": "提到的场馆或类别，可为空"}}
 </output>"""
@@ -112,6 +115,7 @@ class AssistantResult:
     urgent: bool  # LLM said urgent OR keyword safety net fired
     source: str  # "llm" | "fallback"
     feedback: dict | None = None  # raw feedback object (validated by PreferenceStore.resolve)
+    place: str = ""  # outing: the place they named ("大黑河"), verified to be in their message
 
     @property
     def command(self) -> Command | None:
@@ -224,4 +228,5 @@ class FamilyAssistant:
         if keyword_urgent and intent != "urgent":
             log.warning("keyword safety net flagged urgent message (LLM said %s)", intent)
         feedback = data.get("feedback") if intent == "feedback" and isinstance(data.get("feedback"), dict) else None
-        return AssistantResult(intent, reply, urgent, "llm", feedback)
+        place = verified_place(data.get("place"), text) if intent == "outing" else ""
+        return AssistantResult(intent, reply, urgent, "llm", feedback, place)

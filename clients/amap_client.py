@@ -403,6 +403,16 @@ class AmapClient:
                            _photo(p), _i(p.get("distance"))))
         return out
 
+    def search_text(self, keywords: str, city: str, types: str = "", limit: int = 10) -> list[Poi]:
+        """Keyword search (several hits) restricted to ``city`` and optionally to AMap ``types``."""
+        data = self._get(
+            "/v3/place/text",
+            {"keywords": keywords, "city": city, "citylimit": "true", "types": types, "offset": min(limit, 25),
+             "page": 1, "extensions": "all"},
+        )
+        return [Poi(_s(p.get("name")), _s(p.get("address")), _s(p.get("location")), _s(p.get("type")), _photo(p))
+                for p in data.get("pois") or [] if isinstance(p, dict) and _s(p.get("location")) and _s(p.get("name"))]
+
     def search_poi(self, keywords: str, city: str, strict: bool = True) -> Poi | None:
         """Keyword POI search restricted to ``city``. With ``strict`` (default) the top hit is
         returned only if its name actually matches ``keywords`` (see poi_name_matches)."""

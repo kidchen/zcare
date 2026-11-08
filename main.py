@@ -49,6 +49,7 @@ from clients.wemp_admin import WeMpAdminClient, WeMpAdminError, is_image
 from clients.wemp_rss import WeMpRssClient
 from config import Settings, get_settings
 from features.activity import ActivityLog
+from features.area import build_area_message
 from features.assistant import FamilyAssistant
 from features.clawbot import ROLES as CLAW_ROLES
 from features.clawbot import AccountStore, ClawAccount, ClawBotRunner
@@ -740,7 +741,7 @@ def _display_name(s: Settings, userid: str) -> str:
 
 
 def build_on_demand_message(
-    sv: Services, command: Command, name: str, record: bool = False
+    sv: Services, command: Command, name: str, record: bool = False, place: str = "", role: str = "mother",
 ) -> Message | None:
     """The data message for an on-demand request (nothing sent).
 
@@ -750,6 +751,9 @@ def build_on_demand_message(
     if command is Command.COMMUTE:
         return build_commute_message(sv.amap, sv.settings, name=name, greeting="你好", events=sv.events,
                                      today_date=sv.now().date())
+    if command is Command.OUTING and place:  # 「大黑河那边有什么逛的」
+        home = sv.settings.father_home if role == "father" else sv.settings.mother_home
+        return build_area_message(sv.amap, sv.settings, place, home, name, prefs=sv.prefs)
     if command is Command.OUTING:
         return build_outing_message(
             sv.amap, sv.settings, sv.state, sv.now().date(), record=False, name=name, greeting="你好",
@@ -767,13 +771,14 @@ def build_on_demand_message(
     return None
 
 
-def run_on_demand(command: Command, userid: str, chatter: Chatter | None = None) -> None:
+def run_on_demand(command: Command, userid: str, chatter: Chatter | None = None, place: str = "") -> None:
     """Build the requested message and push it to the requester (runs after the HTTP reply)."""
     sv = get_services()
     chatter = chatter or wecom_chatter(sv, userid)
     name = _role_name(sv.settings, chatter.role)
     try:
-        message = build_on_demand_message(sv, command, name, record=not sv.settings.dry_run)
+        message = build_on_demand_message(sv, command, name, record=not sv.settings.dry_run, place=place,
+                                          role=chatter.role)
         if message is None:
             return
         chatter.send_message(message)
@@ -836,10 +841,10 @@ def run_llm_chat(userid: str, text: str, chatter: Chatter | None = None) -> None
     command = result.command
     if command is not None and (get_clawbot_bot() if chatter.channel == "clawbot" else get_bot()).try_start(
             chatter.key, command):
-        if chatter.channel == "wecom":
+        if chatter.channel == "wecom" and not result.place:
             run_on_demand(command, userid)
         else:
-            run_on_demand(command, userid, chatter)
+            run_on_demand(command, userid, chatter, place=result.place)
 
 
 def _alert_urgent(sv: Services, name: str, text: str) -> None:
