@@ -49,6 +49,17 @@ from clients.wemp_admin import WeMpAdminClient, WeMpAdminError, is_image
 from clients.wemp_rss import WeMpRssClient
 from config import Settings, get_settings
 from features.activity import ActivityLog
+from features.alarms import (
+    Alarm,
+    AlarmEngine,
+    backup_alarm,
+    delivery_alarms,
+    feed_alarms,
+    host_alarms,
+    job_alarms,
+    llm_alarm,
+    missed_alarms,
+)
 from features.area import build_area_message
 from features.assistant import FamilyAssistant
 from features.clawbot import ROLES as CLAW_ROLES
@@ -394,6 +405,80 @@ def run_backup() -> None:
         sv.record("error", what="每日备份", error=repr(exc)[:200])
 
 
+ALARMS_CHECK_S = 600  # every 10 minutes
+ALARMS_REMIND_CRON = "0 10 * * *"  # one daily summary while anything is still firing
+PROCESS_START = time.time()
+
+
+def alarm_notify(sv: Services, title: str, lines: list[str]) -> None:
+    """PushPlus to you (the token owner) first; WeCom as backup so one broken channel can't hide an alarm."""
+    sent = False
+    if sv.pushplus is not None and not sv.settings.dry_run:
+        try:
+            body = "".join(f'<p style="font-size:20px;line-height:1.6;margin:10px 0">{html.escape(x)}</p>' for x in lines)
+            sv.pushplus.send(title[:60], body)
+            sent = True
+        except Exception:  # noqa: BLE001
+            log.exception("alarm via PushPlus failed")
+    if sv.settings.admin_userid:
+        try:
+            _send_text(sv, [sv.settings.admin_userid], f"[zcare] {title}\n" + "\n".join(lines))
+            sent = True
+        except Exception:  # noqa: BLE001
+            log.exception("alarm via WeCom failed")
+    if not sent:
+        log.error("ALARM (not delivered): %s | %s", title, " / ".join(lines))
+
+
+def get_alarm_engine() -> AlarmEngine:
+    sv = get_services()
+    return AlarmEngine(sv.state, lambda title, lines: alarm_notify(sv, title, lines))
+
+
+def collect_alarms(sv: Services) -> list[Alarm]:
+    now = time.time()
+    entries = sv.activity.since(8 * 86400) if sv.activity else []
+    schedules = {name: CronTrigger.from_crontab(job.cron(sv.settings), timezone=sv.settings.timezone)
+                 for name, job in JOBS.items() if job.cron(sv.settings).strip()}
+    articles = None
+    if sv.events is not None:
+        try:
+            articles = sv.events.recent_articles()
+        except Exception:  # noqa: BLE001 — "feed down" is itself an alarm
+            articles = None
+    data_dir = sv.settings.state_file.parent
+    out = (job_alarms(entries, schedules) + missed_alarms(entries, schedules, PROCESS_START, now)
+           + delivery_alarms(entries, now) + [llm_alarm(entries, now), backup_alarm(data_dir, now)]
+           + host_alarms(data_dir))
+    if sv.settings.wemp_rss_url:
+        out += [a for a in feed_alarms(entries, articles, now)
+                if sv.settings.alarm_feed_text or a.key not in DISABLED_WITHOUT_TEXT]
+    return out
+
+
+DISABLED_WITHOUT_TEXT = ("feed:no_text",)  # ALARM_FEED_TEXT=false
+
+
+def run_alarms() -> None:
+    sv = get_services()
+    try:
+        engine = get_alarm_engine()
+        if not sv.settings.alarm_feed_text:
+            engine.clear(DISABLED_WITHOUT_TEXT)
+        fired = engine.apply(collect_alarms(sv))
+        if fired:
+            log.warning("alarms: %s", " | ".join(fired))
+    except Exception:  # noqa: BLE001 — monitoring must never take the scheduler down
+        log.exception("alarm check failed")
+
+
+def run_alarm_reminder() -> None:
+    try:
+        get_alarm_engine().remind()
+    except Exception:  # noqa: BLE001
+        log.exception("alarm reminder failed")
+
+
 def build_report(sv: Services) -> tuple[str, str]:
     s = sv.settings
     names = {"father": s.father.display_name, "mother": s.mother.display_name, "admin": "你", "other": "其他成员"}
@@ -432,6 +517,10 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
                           id="daily_report", name="daily_report", replace_existing=True)
     scheduler.add_job(run_backup, CronTrigger.from_crontab(BACKUP_CRON, timezone=settings.timezone),
                       id="backup", name="backup", replace_existing=True)
+    scheduler.add_job(run_alarms, "interval", seconds=ALARMS_CHECK_S, id="alarms", name="alarms",
+                      replace_existing=True)
+    scheduler.add_job(run_alarm_reminder, CronTrigger.from_crontab(ALARMS_REMIND_CRON, timezone=settings.timezone),
+                      id="alarm_reminder", name="alarm_reminder", replace_existing=True)
     if settings.wemp_rss_url and settings.llm_api_key:
         scheduler.add_job(run_events_warm, CronTrigger.from_crontab(EVENTS_WARM_CRON, timezone=settings.timezone),
                           id="events_warm", name="events_warm", replace_existing=True)

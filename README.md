@@ -279,6 +279,29 @@ HTTPS only — a long-poll for new messages, replies with the message's `context
   `ADMIN_WECOM_USERID` gets one WeCom text; another when it recovers. It reads the WeCom settings from the
   server's `.env`. Check it: `systemctl list-timers zcare-watchdog.timer`, `journalctl -u zcare-watchdog`.
 
+## Alarms
+
+Silent degradation (a feed delivering only headlines, a job that never ran) used to show up only as empty
+sections. Every 10 minutes zcare checks (`features/alarms.py`, adapted from nari) and messages you via
+**PushPlus** (WeCom as backup) only when something changes: 🚨 fired, ⏫ escalated, ✅ recovered (with how long it
+lasted). While anything is still firing you get one summary at 10:00.
+
+| Alarm | Fires when |
+|---|---|
+| job / missed | a scheduled message failed or sent the backup greeting; or its time passed (+30 min) without a run |
+| feed down / stale / **no text** | we-mp-rss unreachable; no new articles yesterday or today; ≥ 80% of recent articles are headline-only |
+| PushPlus / ClawBot | a PushPlus send failed (24 h); a ClawBot session problem (6 h) |
+| GLM | ≥ half of the last 6 h's calls failed (min 3) — warning |
+| backup / disk / memory | newest backup > 2 days (warning); disk ≥ 85%; available memory < 10% (warning) |
+
+The host watchdog (container down or unhealthy) alerts through PushPlus and WeCom too.
+
+**Article text on cloud servers:** WeChat sends datacenter IPs to its 「环境异常」 captcha for article pages, so
+we-mp-rss can't collect text (web and api modes both fail; 微信读书 doesn't carry small local accounts). This
+deployment runs headline-only: `GATHER.CONTENT=False` (no futile browser fetches) and `ALARM_FEED_TEXT=false`.
+The digest then shows each headline with its source and a link to the original — never a summary GLM would
+have to guess from a title.
+
 ## Development
 
 ```bash

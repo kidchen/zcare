@@ -44,7 +44,9 @@ services:
       PASSWORD: ${WEMP_ADMIN_PASSWORD:?set WEMP_ADMIN_PASSWORD in .env}
       SECRET_KEY: ${WEMP_SECRET_KEY:?set WEMP_SECRET_KEY in .env}
       SAFE_LIC_KEY: ${WEMP_LIC_KEY:?set WEMP_LIC_KEY in .env}
-      GATHER.CONTENT: "True"       # fetch full article text (default False)
+      # Article text: OFF. WeChat sends this datacenter IP to its 环境异常 captcha for article pages (web and api
+      # modes both fail, every fetch), and 微信读书 doesn't carry these local accounts — zcare works from headlines.
+      GATHER.CONTENT: "False"
       RSS_FULL_CONTEXT: "True"
       RSS_PAGE_SIZE: "100"         # caps ?limit= on the JSON feed
       MAX_PAGE: "2"                # article-list pages per account per run — gentle on WeChat's rate limit

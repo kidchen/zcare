@@ -165,6 +165,7 @@ class Settings:
     admin_name: str = ""  # how 小助理 addresses you (admin role, e.g. when testing ClawBot); empty = no name
     pushplus_copy_to_me: bool = False  # also send the token owner (you) a copy of every scheduled message
     clawbot_enabled: bool = True  # chat in normal WeChat via ClawBot (accounts: python main.py clawbot-login)
+    alarm_feed_text: bool = True  # alarm when articles arrive headline-only (off: known limitation)
     delivery_channels: tuple[str, ...] = ("wecom",)
 
     def member(self, role: str) -> FamilyMember:
@@ -293,6 +294,7 @@ def load_settings() -> Settings:
         pushplus_copy_to_me=_env_bool("PUSHPLUS_COPY_TO_ME", False),
         admin_name=_env("ADMIN_NAME"),
         clawbot_enabled=_env_bool("CLAWBOT_ENABLED", True),
+        alarm_feed_text=_env_bool("ALARM_FEED_TEXT", True),
         delivery_channels=channels,
     )
     for role in settings.tv_recipients:

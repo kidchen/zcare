@@ -5,7 +5,7 @@ def test_scheduler_registers_jobs_in_shanghai_time(settings):
     import main
     scheduler = main.build_scheduler(settings)
     jobs = {j.id: j for j in scheduler.get_jobs()}
-    assert set(jobs) == {"commute", "outing", "tv", "digest", "backup"}
+    assert set(jobs) == {"commute", "outing", "tv", "digest", "backup", "alarms", "alarm_reminder"}
     trig: CronTrigger = jobs["tv"].trigger
     assert str(trig.timezone) == "Asia/Shanghai"
     assert "day_of_week='fri'" in repr(trig) and "hour='19'" in repr(trig)

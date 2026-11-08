@@ -198,3 +198,15 @@ def test_weread_tilde_links_are_repaired(raw, fixed):
     from clients.wemp_rss import fix_link, parse_feed
     assert fix_link(raw) == fixed
     assert parse_feed({"items": [{"title": "t", "link": raw}]})[0].url == fixed
+
+
+def test_headline_only_articles_are_never_summarized_by_glm(state):
+    bare = [A("呼市供热费有新通知", ""), A("地铁3号线开通时间确定", "地铁3号线将于12月28日开通运营，设站18座。" * 3)]
+    llm = ScriptedLLM(rank={"picks": [{"id": 1, "score": 5}, {"id": 2, "score": 4}]},
+                      summary={"items": [{"id": 1, "title": "地铁年底开通", "summary": "地铁3号线12月28日开通，设站18座。"}]})
+    items = dg.DigestBuilder(llm, state).build(bare, TODAY)
+    summarize_calls = [m for m, _ in llm.calls if m[0]["content"] == dg.SUMMARY_PROMPT]
+    assert len(summarize_calls) == 1 and "供热费" not in summarize_calls[0][1]["content"]   # headline-only not sent
+    heat = next(i for i in items if "供热" in i.title)
+    assert heat.title == "呼市供热费有新通知" and heat.summary == ""                        # no invented summary
+    assert "来源：新闻天天看" in dg.format_digest_message(items).markdown

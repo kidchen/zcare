@@ -37,6 +37,7 @@ MAX_CANDIDATES = 40
 SUMMARIZE_TOP = 7  # summarize a couple more than we show, in case some fail the checks
 TEXT_CHARS = 1200
 SAME_STORY = 0.6  # title similarity ratio
+MIN_TEXT_CHARS = 10  # below this the article has no real text (feed failed to collect it): never summarize
 _PUNCT = re.compile(r"[\s\W_]+", re.UNICODE)
 
 RANK_PROMPT = """<task>
@@ -188,7 +189,10 @@ class DigestBuilder:
         if not pool:
             return []
         top = self._rank(pool)[:SUMMARIZE_TOP]
-        summaries = self._summarize(top)
+        # Only articles with real text go to GLM: from a headline alone it would invent the summary.
+        with_text = [a for a in top if len(a.content) >= MIN_TEXT_CHARS]
+        by_text = self._summarize(with_text)
+        summaries = {top.index(a): by_text[j] for j, a in enumerate(with_text) if j in by_text}
         items: list[DigestItem] = []
         for i, a in enumerate(top):
             text = f"{a.title}\n{a.content}"
@@ -196,7 +200,7 @@ class DigestBuilder:
             if not (title and summary and _numbers_backed(title, text) and _numbers_backed(summary, text)):
                 if title or summary:
                     log.info("digest item falls back to the article's own words: %s", a.title)
-                title, summary = a.title.strip(), lead_sentence(a.content) or a.title.strip()
+                title, summary = a.title.strip(), lead_sentence(a.content)  # "" → headline + source only
             items.append(DigestItem(title, summary, a.url, a.account, article_key(a), a.title, a.image))
             if len(items) >= self._max:
                 break
@@ -216,7 +220,7 @@ def format_digest_message(items: list[DigestItem], name: str = "爸爸妈妈", g
     lines = [f"**{name}{greeting} 📰 今天呼和浩特的新鲜事**", ""]
     for n, it in enumerate(items, start=1):
         src = f"（来源：{it.account}）" if it.account else ""
-        lines += [f"**{n}. {it.title}**", f"> {it.summary}{src}"]
+        lines += [f"**{n}. {it.title}**", f"> {it.summary}{src}" if it.summary else f"> 来源：{it.account}"]
         if it.url:
             lines.append(f"[阅读原文]({it.url})")
         lines.append("")

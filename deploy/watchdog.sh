@@ -33,17 +33,35 @@ send() {
     curl -sS -m 20 -K - -H 'Content-Type: application/json' --data-binary "$body" | grep -q '"errcode" *: *0'
 }
 
+send_pushplus() {  # to the PushPlus token owner (you); token via stdin, never on the command line
+  local token
+  token=$(env_value PUSHPLUS_TOKEN)
+  [ -n "$token" ] || return 1
+  local f rc
+  f=$(umask 077 && mktemp)          # body holds the token: private file, removed right after
+  printf '{"token":"%s","title":"%s","content":"%s","template":"txt","channel":"wechat"}' "$token" "$2" "$1" > "$f"
+  curl -sS -m 20 -H 'Content-Type: application/json' --data-binary @"$f" https://www.pushplus.plus/send | grep -q '"code" *: *200'
+  rc=$?; rm -f "$f"; return $rc
+}
+
+alert() {  # PushPlus first, WeCom as backup: succeed if either got through
+  local ok=1
+  send_pushplus "$1" "$2" && ok=0
+  send "$1" && ok=0
+  return $ok
+}
+
 count=$(cat "$STATE_DIR/bad_count" 2>/dev/null || echo 0)
 alerted=$([ -f "$STATE_DIR/alerted" ] && echo 1 || echo 0)
 if [ -n "$problems" ]; then
   count=$((count + 1)); echo "$count" > "$STATE_DIR/bad_count"
   if [ "$count" -ge 2 ] && [ "$alerted" = 0 ]; then
-    send "🚨 zcare 服务器异常：${problems} 未正常运行，爸妈的消息可能发不出去。查看：cd $(dirname "$ENV_FILE") && docker compose ps && docker compose logs --tail 50" \
-      && touch "$STATE_DIR/alerted"
+    alert "🚨 zcare 服务器异常：${problems} 未正常运行，爸妈的消息可能发不出去。查看：cd $(dirname "$ENV_FILE") && docker compose ps && docker compose logs --tail 50" \
+      "zcare 服务器异常" && touch "$STATE_DIR/alerted"
   fi
 else
   echo 0 > "$STATE_DIR/bad_count"
   if [ "$alerted" = 1 ]; then
-    send "✅ zcare 已恢复正常（zcare: ${zcare}，we-mp-rss: ${wemp}）" && rm -f "$STATE_DIR/alerted"
+    alert "✅ zcare 已恢复正常（zcare: ${zcare}，we-mp-rss: ${wemp}）" "zcare 已恢复" && rm -f "$STATE_DIR/alerted"
   fi
 fi
