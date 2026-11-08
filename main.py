@@ -11,9 +11,11 @@ and your parents would get duplicate messages.
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import re
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -30,11 +32,13 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Res
 
 from bot import ChatBot, Command
 from clients.amap_client import AmapClient
+from clients.clawbot_client import ClawBotClient, Inbound
 from clients.llm_client import LLMClient
 from clients.nmc_client import NmcClient
 from clients.pushplus_client import PushPlusClient
 from clients.wecom_callback import (
     CallbackFormatError,
+    IncomingMessage,
     build_passive_reply,
     extract_encrypt,
     parse_message,
@@ -46,6 +50,9 @@ from clients.wemp_rss import WeMpRssClient
 from config import Settings, get_settings
 from features.activity import ActivityLog
 from features.assistant import FamilyAssistant
+from features.clawbot import ROLES as CLAW_ROLES
+from features.clawbot import AccountStore, ClawAccount, ClawBotRunner
+from features.clawbot import login as clawbot_login
 from features.commute import build_commute_message, build_offday_greeting
 from features.daytype import day_info
 from features.detail import DetailStore, render_page
@@ -57,7 +64,7 @@ from features.push import push_title, render_push_html
 from features.report import CHANNEL_CN, JOB_NAMES, build_daily_report
 from features.tv_recommend import PosterCache, build_tv_message
 from features.weather import build_weather_message
-from messages import Message, add_notices, markdown_to_text
+from messages import Message, add_notices, markdown_to_chat, markdown_to_text
 from storage import StateStore, backup_data
 
 log = logging.getLogger("zcare")
@@ -130,14 +137,15 @@ def deliver(sv: Services, recipients: list[str], message: Message) -> None:
     sv.wecom.send_message(recipients, message, sv.settings.wecom_message_type)
 
 
-def push(sv: Services, to: list[str], message: Message) -> None:
-    """PushPlus: one request for the owner ("" — you, while testing), one for all friend tokens."""
+def push(sv: Services, to: list[str], message: Message, copy_label: str = "") -> None:
+    """PushPlus: one request for all friend tokens, one for the owner ("" — you). When the owner gets a
+    COPY of someone else's message, its title starts with ``copy_label`` (e.g. "爸·") to tell them apart."""
     title, page = push_title(message), render_push_html(message)
-    if "" in to:
-        sv.pushplus.send(title, page)
     friends = [t for t in to if t]
     if friends:
         sv.pushplus.send(title, page, to=friends)
+    if "" in to:
+        sv.pushplus.send(f"{copy_label}{title}" if friends and copy_label else title, page)
 
 
 def deliver_scheduled(sv: Services, name: str, job: Job, message: Message) -> list[str]:
@@ -154,7 +162,7 @@ def deliver_scheduled(sv: Services, name: str, job: Job, message: Message) -> li
             elif channel == "pushplus":
                 if sv.pushplus is None:
                     raise RuntimeError("PushPlus is not configured")
-                push(sv, job.pushplus_to(sv.settings), message)
+                push(sv, job.pushplus_to(sv.settings), message, copy_label=job.copy_label(sv.settings))
             ok.append(channel)
         except Exception as exc:  # noqa: BLE001 — one channel down must not cost the other
             log.warning("job %s: %s delivery failed: %s", name, channel, exc)
@@ -191,8 +199,15 @@ class Job:
         return list(dict.fromkeys(u for r in self.roles(s) if (u := s.member(r).wecom_userid)))
 
     def pushplus_to(self, s: Settings) -> list[str]:
-        """PushPlus 好友令牌, deduplicated; "" = the token owner (you, while testing)."""
-        return list(dict.fromkeys(s.member(r).pushplus_to for r in self.roles(s)))
+        """PushPlus 好友令牌, deduplicated; "" = the token owner (you): a role without a token, or the
+        PUSHPLUS_COPY_TO_ME copy."""
+        to = [s.member(r).pushplus_to for r in self.roles(s)] + ([""] if s.pushplus_copy_to_me else [])
+        return list(dict.fromkeys(to))
+
+    def copy_label(self, s: Settings) -> str:
+        """Title prefix on your copy: who it was for ("爸·", "妈·", "爸妈·")."""
+        names = "".join(dict.fromkeys(s.member(r).display_name[:1] for r in self.roles(s)))
+        return f"{names}·" if names else ""
 
 
 def build_commute_job(sv: Services, record: bool) -> Message | None:
@@ -445,7 +460,12 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     for job in scheduler.get_jobs():
         log.info("scheduled %-8s next run %s", job.id, job.next_run_time)
+    if sv.settings.clawbot_enabled:
+        sync_clawbot_runners()
+        scheduler.add_job(sync_clawbot_runners, "interval", seconds=CLAWBOT_SYNC_S, id="clawbot_sync",
+                          name="clawbot_sync", replace_existing=True)
     yield
+    stop_clawbot_runners()
     scheduler.shutdown(wait=False)
 
 
@@ -491,7 +511,7 @@ def detail_page(report_id: str) -> HTMLResponse:
     details = get_services().details
     data = details.load(report_id) if details else None
     if data is None:
-        page = render_page("内容已过期", "**这条内容已经过期了**\n\n请等下一条消息，或者直接问问小助手。")
+        page = render_page("内容已过期", "**这条内容已经过期了**\n\n请等下一条消息，或者直接问问小助理。")
         return HTMLResponse(page, status_code=404, headers={"Cache-Control": "no-store"})
     return HTMLResponse(render_page(data.get("title", ""), data.get("markdown", "")),
                         headers={"Cache-Control": "private, no-store", "X-Robots-Tag": "noindex",
@@ -687,6 +707,31 @@ def get_assistant() -> FamilyAssistant | None:
     return FamilyAssistant(llm, assistant_name=s.assistant_name)
 
 
+@dataclass(frozen=True)
+class Chatter:
+    """Who is chatting, and how to answer them — WeCom (a member's UserID) or ClawBot (normal WeChat)."""
+    key: str  # unique per person+channel: rate limits and the assistant's short memory
+    role: str  # father | mother | admin | other
+    send_text: Callable[[str], None]
+    send_message: Callable[[Message], None]
+    channel: str = "wecom"
+
+
+def _role_name(s: Settings, role: str) -> str:
+    if role in ("father", "mother"):
+        return s.member(role).display_name
+    return s.admin_name if role == "admin" else ""
+
+
+def wecom_chatter(sv: Services, userid: str) -> Chatter:
+    def send_message(message: Message) -> None:
+        if sv.settings.dry_run or sv.wecom is None:
+            log.info("[dry-run] message → %s\n%s", userid, message.markdown)
+            return
+        deliver(sv, [userid], message)
+    return Chatter(userid, role_of(sv.settings, userid), lambda t: _send_text(sv, [userid], t), send_message)
+
+
 def _display_name(s: Settings, userid: str) -> str:
     for member in (s.father, s.mother):
         if member.wecom_userid and member.wecom_userid == userid:
@@ -711,42 +756,40 @@ def build_on_demand_message(
             events=sv.events, prefs=sv.prefs, remember=record,  # remember what we suggested → "这个太远了"
         )
     if command is Command.TV:
-        return build_tv_message(sv.settings, sv.state, record=record, name=name or "您", posters=sv.posters)
+        return build_tv_message(sv.settings, sv.state, record=record, name=name, posters=sv.posters)
     if command is Command.NEWS:
         # on demand: not remembered, so the evening digest can still include these stories
-        return build_digest(sv, record=False, name=name or "您", greeting="你好")
+        return build_digest(sv, record=False, name=name, greeting="你好")  # no name → just "你好"
     if command is Command.WEATHER:
         audience = "father" if name == sv.settings.father.display_name else "mother"
-        return build_weather_message(sv.amap, sv.settings, sv.now().date(), name=name or "您", greeting="你好",
+        return build_weather_message(sv.amap, sv.settings, sv.now().date(), name=name, greeting="你好",
                                      events=sv.events, audience=audience)
     return None
 
 
-def run_on_demand(command: Command, userid: str) -> None:
+def run_on_demand(command: Command, userid: str, chatter: Chatter | None = None) -> None:
     """Build the requested message and push it to the requester (runs after the HTTP reply)."""
     sv = get_services()
-    name = _display_name(sv.settings, userid)
+    chatter = chatter or wecom_chatter(sv, userid)
+    name = _role_name(sv.settings, chatter.role)
     try:
         message = build_on_demand_message(sv, command, name, record=not sv.settings.dry_run)
         if message is None:
             return
-        if sv.settings.dry_run or sv.wecom is None:
-            log.info("[dry-run] on-demand %s → %s\n%s", command.value, userid, message.markdown)
-            return
-        deliver(sv, [userid], message)
-        log.info("on-demand %s sent to %s", command.value, userid)
-        sv.record("on_demand", command=command.value, role=role_of(sv.settings, userid), ok=True)
+        chatter.send_message(message)
+        log.info("on-demand %s sent to %s via %s", command.value, chatter.key, chatter.channel)
+        sv.record("on_demand", command=command.value, role=chatter.role, ok=True, channel=chatter.channel)
     except Exception as exc:
-        log.exception("on-demand %s for %s failed", command.value, userid)
-        sv.record("on_demand", command=command.value, role=role_of(sv.settings, userid), ok=False,
-                  error=repr(exc)[:120])
-        if sv.wecom and not sv.settings.dry_run:
+        log.exception("on-demand %s for %s failed", command.value, chatter.key)
+        sv.record("on_demand", command=command.value, role=chatter.role, ok=False, error=repr(exc)[:120],
+                  channel=chatter.channel)
+        if not sv.settings.dry_run:
             try:  # traffic / outing: the same warm fallback as the daily messages; dramas: a short apology
                 job = {Command.COMMUTE: "commute", Command.OUTING: "outing"}.get(command)
                 if job:
-                    sv.wecom.send_message([userid], fallback_message(job, sv), "text")
+                    chatter.send_text(fallback_message(job, sv).text)
                 else:
-                    sv.wecom.send_text([userid], "抱歉，暂时没查到，请稍后再试～")
+                    chatter.send_text("抱歉，暂时没查到，请稍后再试～")
             except Exception:  # noqa: BLE001
                 log.exception("failed to send fallback")
             _alert_admin(sv, f"on-demand {command.value}", exc)
@@ -759,14 +802,15 @@ def _send_text(sv: Services, userids: list[str], text: str) -> None:
     sv.wecom.send_text(userids, text)
 
 
-def run_llm_chat(userid: str, text: str) -> None:
+def run_llm_chat(userid: str, text: str, chatter: Chatter | None = None) -> None:
     """LLM path: warm reply first, then urgent alert and/or the requested data job."""
     sv = get_services()
     assistant = get_assistant()
     if assistant is None:
         return
-    name = _display_name(sv.settings, userid) or "您"
-    audience = "mother" if userid == sv.settings.mother.wecom_userid else "father"
+    chatter = chatter or wecom_chatter(sv, userid)
+    name = _role_name(sv.settings, chatter.role) or "您"
+    audience = "mother" if chatter.role == "mother" else "father"
     today = sv.now().date()
     notes = ([n.line(today) for n in sv.events.cached_notices(today, audience)[:3]]
              if sv.events else [])  # cache only: chat never waits on a network call
@@ -775,26 +819,42 @@ def run_llm_chat(userid: str, text: str) -> None:
         recent = sv.prefs.recent_recommendations()
         extras["Recent"] = "；".join(f"{r['title']}@{r['venue']}·{r['category']}" for r in recent[:3])
         extras["Prefs"] = sv.prefs.summary()
-    result = assistant.respond(userid, name, text, sv.now(), notes=notes, extras=extras)
-    log.info("assistant[%s] intent=%s urgent=%s for %s", result.source, result.intent, result.urgent, userid)
+    result = assistant.respond(chatter.key, name, text, sv.now(), notes=notes, extras=extras)
+    log.info("assistant[%s] intent=%s urgent=%s for %s", result.source, result.intent, result.urgent, chatter.key)
     if sv.prefs is not None:
         result = _apply_feedback(sv.prefs, result, text,
-                                 on_record=lambda fb: sv.record("feedback", role=role_of(sv.settings, userid),
+                                 on_record=lambda fb: sv.record("feedback", role=chatter.role,
                                                                 target=fb.target, value=fb.value, reason=fb.reason))
-    sv.record("chat", role=role_of(sv.settings, userid), intent=result.intent, source=result.source,
-              urgent=result.urgent, text=text[:24])
+    sv.record("chat", role=chatter.role, intent=result.intent, source=result.source,
+              urgent=result.urgent, text=text[:24], channel=chatter.channel)
     try:
-        _send_text(sv, [userid], result.reply)
+        chatter.send_text(result.reply)
     except Exception:  # noqa: BLE001 — still try the alert / job below
-        log.exception("failed to send assistant reply to %s", userid)
-    if result.urgent and sv.settings.admin_userid and sv.settings.admin_userid != userid:
-        try:
-            _send_text(sv, [sv.settings.admin_userid], f"[zcare] ⚠️ {name}发来可能紧急的消息：「{text[:200]}」请尽快联系。")
-        except Exception:  # noqa: BLE001
-            log.exception("failed to send urgent alert")
+        log.exception("failed to send assistant reply to %s", chatter.key)
+    if result.urgent and chatter.role != "admin" and chatter.key != sv.settings.admin_userid:
+        _alert_urgent(sv, name, text)
     command = result.command
-    if command is not None and get_bot().try_start(userid, command):
-        run_on_demand(command, userid)
+    if command is not None and (get_clawbot_bot() if chatter.channel == "clawbot" else get_bot()).try_start(
+            chatter.key, command):
+        if chatter.channel == "wecom":
+            run_on_demand(command, userid)
+        else:
+            run_on_demand(command, userid, chatter)
+
+
+def _alert_urgent(sv: Services, name: str, text: str) -> None:
+    """A parent may need help: tell the admin on every channel we have (WeCom + PushPlus to the owner)."""
+    alert = f"⚠️ {name}发来可能紧急的消息：「{text[:200]}」请尽快联系。"
+    if sv.settings.admin_userid:
+        try:
+            _send_text(sv, [sv.settings.admin_userid], f"[zcare] {alert}")
+        except Exception:  # noqa: BLE001
+            log.exception("failed to send urgent alert via WeCom")
+    if sv.pushplus is not None and not sv.settings.dry_run:
+        try:
+            sv.pushplus.send(f"紧急：{name}的消息", f"<p style=\"font-size:21px\">{html.escape(alert)}</p>")
+        except Exception:  # noqa: BLE001
+            log.exception("failed to send urgent alert via PushPlus")
 
 
 FEEDBACK_ACK = "好的，记下了！以后少给您推荐这类地方～"
@@ -821,6 +881,78 @@ def _apply_feedback(prefs: PreferenceStore, result, text: str, on_record=None):
     elif result.intent == "feedback":
         log.info("feedback not recorded (target not among recent recommendations): %s", result.feedback)
     return result
+
+
+# ------------------------------------------------------------------ ClawBot (chat in normal WeChat)
+
+CLAWBOT_SYNC_S = 60  # pick up new / re-scanned accounts without a restart
+_clawbot_runners: dict[str, ClawBotRunner] = {}
+_clawbot_lock = threading.Lock()
+
+
+def clawbot_store() -> AccountStore:
+    return AccountStore(get_settings().state_file.parent / "clawbot_accounts.json")
+
+
+@lru_cache(maxsize=1)
+def get_clawbot_bot() -> ChatBot:
+    s = get_settings()
+    return ChatBot([f"claw:{r}" for r in CLAW_ROLES], llm_enabled=bool(s.llm_api_key),
+                   llm_max_per_hour=s.llm_max_per_hour, admin_user="claw:admin")
+
+
+def clawbot_chatter(sv: Services, account: ClawAccount, reply: Callable[[str], None]) -> Chatter:
+    def send_text(text: str) -> None:
+        if sv.settings.dry_run:
+            log.info("[dry-run] clawbot → %s: %s", account.role, text)
+            return
+        reply(text)
+    # ClawBot renders **bold** and [text](url): data messages keep both (long links hide behind text)
+    return Chatter(f"claw:{account.role}", account.role, send_text,
+                   lambda m: send_text(markdown_to_chat(m.markdown)), channel="clawbot")
+
+
+def on_clawbot_message(account: ClawAccount, inbound: Inbound, reply: Callable[[str], None]) -> None:
+    sv = get_services()
+    chatter = clawbot_chatter(sv, account, reply)
+    msg = IncomingMessage("", chatter.key, int(time.time()), "text", inbound.text, inbound.message_id, "")
+    reaction = get_clawbot_bot().handle(msg)
+    if not reaction.chat and (reaction.command or reaction.admin_command or reaction.reply):
+        sv.record("chat", role=account.role, source="keyword", channel="clawbot", text=inbound.text[:24],
+                  intent=(reaction.command.value if reaction.command else
+                          "admin" if reaction.admin_command else "help"))
+    if reaction.reply:
+        chatter.send_text(reaction.reply)
+    if reaction.admin_command == "wemp_qr" and sv.settings.admin_userid:
+        submit_background(run_wemp_qr, sv.settings.admin_userid)
+    if reaction.chat:
+        submit_background(run_llm_chat, chatter.key, inbound.text, chatter)
+    if reaction.command is not None:
+        submit_background(run_on_demand, reaction.command, chatter.key, chatter)
+
+
+def sync_clawbot_runners() -> None:
+    """Start a receive loop per stored account; restart it when the account was re-scanned."""
+    sv = get_services()
+    accounts = {a.role: a for a in clawbot_store().all()}
+    problem = lambda msg: sv.record("error", what="ClawBot", error=msg)  # noqa: E731
+    with _clawbot_lock:
+        for role in list(_clawbot_runners):
+            if role not in accounts or _clawbot_runners[role].account.bot_id != accounts[role].bot_id:
+                _clawbot_runners.pop(role).stop()
+        for role, account in accounts.items():
+            if role not in _clawbot_runners:
+                runner = ClawBotRunner(account, on_clawbot_message,
+                                       sv.settings.state_file.parent / f"clawbot_{role}.cursor", on_problem=problem)
+                runner.start()
+                _clawbot_runners[role] = runner
+
+
+def stop_clawbot_runners() -> None:
+    with _clawbot_lock:
+        for runner in _clawbot_runners.values():
+            runner.stop()
+        _clawbot_runners.clear()
 
 
 def _check_timestamp(timestamp: str) -> None:
@@ -898,12 +1030,40 @@ def cli(argv: list[str] | None = None) -> None:
         p = sub.add_parser(cmd, help=f"{cmd} one job now")
         p.add_argument("job", choices=sorted(JOBS))
     sub.add_parser("report", help="print the daily admin report for the last 24 hours (sends nothing)")
+    cl = sub.add_parser("clawbot-login", help="bind a WeChat to 小助理 via ClawBot (scan the QR shown here)")
+    cl.add_argument("--role", choices=CLAW_ROLES, default="admin", help="who will chat: father / mother / admin (you)")
+    sub.add_parser("clawbot-list", help="list bound ClawBot accounts")
+    cr = sub.add_parser("clawbot-remove", help="unbind a ClawBot account")
+    cr.add_argument("--role", choices=CLAW_ROLES, required=True)
     chat = sub.add_parser("chat", help="try the LLM assistant locally (calls the LLM, sends nothing)")
     chat.add_argument("text")
     chat.add_argument("--as", dest="role", choices=("father", "mother"), default="mother")
     chat.add_argument("--no-followup", action="store_true",
                       help="don't build the traffic/outing/tv data message (skips AMap/Douban calls)")
     args = parser.parse_args(argv)
+
+    if args.cmd == "clawbot-login":
+        import qrcode
+
+        def show(link: str) -> None:
+            qr = qrcode.QRCode(border=1)
+            qr.add_data(link)
+            qr.print_ascii(invert=True)
+            print(f"\n用要绑定的微信扫上面的二维码（{args.role}），扫完在手机上点确认。二维码几分钟内有效。")
+
+        account = clawbot_login(ClawBotClient(), args.role, show, lambda prompt: input(prompt).strip())
+        clawbot_store().add(account)
+        print(f"✅ 绑定成功（{args.role}）。zcare 会在 1 分钟内开始接收这个微信发给 ClawBot 的消息。")
+        return
+
+    if args.cmd == "clawbot-list":
+        for a in clawbot_store().all():
+            print(f"{a.role:7} bot={a.bot_id[:6]}… since {datetime.fromtimestamp(a.added_at):%Y-%m-%d %H:%M}")
+        return
+
+    if args.cmd == "clawbot-remove":
+        print("removed" if clawbot_store().remove(args.role) else "no such account")
+        return
 
     if args.cmd == "report":
         short, full = build_report(get_services())

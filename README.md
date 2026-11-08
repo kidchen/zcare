@@ -239,8 +239,30 @@ through [PushPlus](https://www.pushplus.plus) (its 服务号 "pushplus 推送加
   are blocked by the https page, so drama posters aren't shown there.
 - Recipients: Dad/Mom scan your PushPlus QR, then put their 好友令牌 in `FATHER_PUSHPLUS_TO` /
   `MOTHER_PUSHPLUS_TO`. Empty = you (the token owner) — handy for testing.
+- `PUSHPLUS_COPY_TO_ME=true` sends you a copy of every scheduled message (title prefixed 爸·/妈·/爸妈·) to keep
+  an eye on quality. That's one extra request per message: at most ~8 requests/day of the 200 free.
 - Free tier (real-name verified): 200 requests/day, 5/minute — zcare uses ~5/day. `code 200` only means
   PushPlus accepted the message. Content passes through PushPlus's servers (history kept 30 days).
+
+## Chat in normal WeChat (ClawBot)
+
+Mom and Dad chat with 小助理 in their own WeChat through 微信ClawBot (WeChat's official bot plugin). zcare speaks
+its iLink protocol directly (mirrored from Tencent's MIT plugin `@tencent-weixin/openclaw-weixin`): outbound
+HTTPS only — a long-poll for new messages, replies with the message's `context_token`. No port is opened.
+
+- **Bind a WeChat** (once per person, on the server, interactive):
+  `ssh -t root@<server-ip> "cd /root/zcare && docker compose exec zcare python main.py clawbot-login --role admin"`
+  — scan the QR shown in the terminal with that person's WeChat and confirm (enter the digits if asked).
+  Roles: `admin` (you, for testing), `father`, `mother`. Re-scanning a role replaces it. zcare picks up new
+  accounts within a minute. `clawbot-list` / `clawbot-remove --role …` manage them.
+- Accounts (with their bot tokens) live in `data/clawbot_accounts.json` in the data volume — never in git.
+- Same assistant as before: keywords, the GLM free model, feedback / preferences, the urgent rule (an urgent
+  message alerts you on WeCom **and** PushPlus). Data replies (news, weather…) arrive as plain text with links;
+  voice messages work too (WeChat's transcript is used).
+- Only messages from the person who scanned are answered. Error -14 (stale session) pauses that account for an
+  hour and is reported under ❗ 异常; if it persists, re-scan.
+- zcare only REPLIES here — proactive sends need a recent message from the user — so scheduled messages stay
+  on PushPlus. `CLAWBOT_ENABLED=false` turns it off. The server rules aren't fully documented: watch the logs.
 
 ## Data safety & monitoring
 

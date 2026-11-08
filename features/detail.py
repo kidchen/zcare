@@ -125,7 +125,7 @@ def render_page(title: str, markdown: str) -> str:
 <style>{PAGE_CSS}</style>
 </head><body><main>
 {markdown_to_html(markdown)}
-<footer>家里的小助手 · 信息仅供参考，出门前以实际情况为准</footer>
+<footer>家里的小助理 · 信息仅供参考，出门前以实际情况为准</footer>
 </main></body></html>"""
 
 

@@ -27,6 +27,19 @@ def markdown_to_text(markdown: str) -> str:
     return text.strip()
 
 
+_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def markdown_to_chat(markdown: str) -> str:
+    """For WeChat ClawBot, which renders **bold** and [text](url) links (tested): keep those so long
+    AMap / article URLs hide behind short tappable text; drop what it doesn't show (WeCom <font> tags,
+    headings, ">" quote markers, images)."""
+    text = _IMAGE.sub("", strip_html(markdown))
+    text = _HEADING.sub("", text)
+    text = _QUOTE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 @dataclass(frozen=True)
 class Article:
     """One item of a WeCom ``news`` card. Plain text only — no HTML, no markdown."""

@@ -54,7 +54,7 @@ S = {
 def push_title(message: Message) -> str:
     """Notification title: the key fact first, no emoji (WeChat drops them anyway)."""
     raw = message.headline or message.title
-    return _SPACES.sub(" ", _EMOJI.sub("", raw)).strip()[:HEADLINE_CHARS] or "家里的小助手"
+    return _SPACES.sub(" ", _EMOJI.sub("", raw)).strip()[:HEADLINE_CHARS] or "家里的小助理"
 
 
 def _text(raw: str) -> str:
@@ -151,4 +151,4 @@ def render_push_html(message: Message) -> str:
         first = False
     flush()
     return (f'<div style="{S["page"]}">' + "".join(out)
-            + f'<div style="{S["foot"]}">家里的小助手 · 信息仅供参考，出门前以实际情况为准</div></div>')
+            + f'<div style="{S["foot"]}">家里的小助理 · 信息仅供参考，出门前以实际情况为准</div></div>')

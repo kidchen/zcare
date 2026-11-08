@@ -467,6 +467,11 @@ def drama_article(drama: Drama, index: int, picurl: str = "", note: str = "", ne
     )
 
 
+def _lead(name: str) -> str:
+    """"爸爸，" — or nothing when there's no name to call (never "您，")."""
+    return f"{name}，" if name and name != "您" else ""
+
+
 def format_tv_message(
     dramas: list[Drama],
     name: str,
@@ -477,9 +482,9 @@ def format_tv_message(
 ) -> Message:
     this_year = this_year or date.today().year
     if not dramas:
-        md = f"**周末追剧推荐 📺**\n\n{name}，这周没找到新的高分剧，可以重温一下喜欢的老剧～"
+        md = f"**周末追剧推荐 📺**\n\n{_lead(name)}这周没找到新的高分剧，可以重温一下喜欢的老剧～"
         return Message(title="周末追剧推荐", markdown=md, headline="这周没有新的高分剧")
-    lines = [f"**{name}，给您挑了几部好剧 📺**", ""]
+    lines = [f"**{_lead(name)}给您挑了几部好剧 📺**", ""]
     for i, d in enumerate(dramas, start=1):
         meta = [f"⭐ {d.rating:.1f}"]
         if d.genres:
@@ -494,7 +499,7 @@ def format_tv_message(
         lines.append("")
     lines.append(f"有正在热播的新剧，也有口碑好的老剧。{app}用遥控器搜剧名的首字母最方便。看剧别太晚，注意休息眼睛～")
     return Message(
-        title=f"{name}，追剧推荐 · 《{dramas[0].title}》等{len(dramas)}部",
+        title=f"{_lead(name)}追剧推荐 · 《{dramas[0].title}》等{len(dramas)}部",
         markdown="\n".join(lines).strip(),
         url=MOBILE_PAGE_URL.format(id=dramas[0].subject_id),
         articles=tuple(drama_article(d, i, picurl_for(d), watch_note(d, platform, app), is_new(d, this_year))

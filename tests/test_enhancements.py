@@ -178,7 +178,7 @@ def test_chat_context_carries_day_recent_and_prefs_but_prompt_stays_static():
     assert sys_msg["content"] == SYSTEM_PROMPT and "feedback" in SYSTEM_PROMPT
     assert "Day=周末" in user_msg["content"] and "Recent=民歌音乐会@内蒙古体育馆·演出" in user_msg["content"]
     assert "Prefs=" not in user_msg["content"]  # empty extras are omitted
-    assert "Day=" not in build_user_content("hi", "爸爸", datetime(2026, 10, 13, 9), "小暖")
+    assert "Day=" not in build_user_content("hi", "爸爸", datetime(2026, 10, 13, 9), "小助理")
 
 
 # ================================================================ 2. weekend & holidays

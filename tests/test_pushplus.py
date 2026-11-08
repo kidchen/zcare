@@ -42,7 +42,7 @@ def test_client_limits():
 def test_push_title_puts_the_headline_first_without_emoji():
     assert push_title(Message("爸爸早上好 · 路况整体畅通", "md", headline="路况整体畅通 车程22分钟")) == "路况整体畅通 车程22分钟"
     assert push_title(Message("📰 今天呼和浩特的新鲜事（5条）", "md")) == "今天呼和浩特的新鲜事（5条）"
-    assert push_title(Message("☀️", "")) == "家里的小助手"
+    assert push_title(Message("☀️", "")) == "家里的小助理"
 
 
 def test_push_page_inline_styles_main_button_and_only_https_covers():
@@ -104,7 +104,7 @@ def test_scheduled_jobs_go_to_every_channel(monkeypatch, settings, state, tmp_pa
         main.JOBS["digest"], build=lambda sv_, record: Message("📰 新鲜事", "**新鲜事**", headline="今晚3条本地新闻")))
     assert main.run_job("digest")["sent"]
     assert wecom.calls == [["dad", "mom"]]
-    assert pp.calls == [("今晚3条本地新闻", ()), ("今晚3条本地新闻", ("momtoken",))]  # dad = owner ("") while testing
+    assert pp.calls == [("今晚3条本地新闻", ("momtoken",)), ("爸妈·今晚3条本地新闻", ())]  # dad = owner ("") while testing
     (sent,) = [e for e in sv.activity.since(60) if e["type"] == "sent"]
     assert sent["channels"] == ["wecom", "pushplus"]
 
@@ -174,3 +174,19 @@ def test_drama_items_keep_their_meta_line():
     md = "**爸爸，给您挑了几部好剧 📺**\n\n**1. 🔥新剧 《漫长的季节》** ⭐ 9.4 ｜ 悬疑\n> 简介\n> 📺 奇异果TV 搜 MCDJJ\n\n看剧别太晚～"
     page = render_push_html(Message("t", md))
     assert "⭐ 9.4 ｜ 悬疑" in page and "奇异果TV 搜 MCDJJ" in page and "<a " not in page
+
+
+def test_copy_to_me_adds_one_request_with_a_labelled_title(monkeypatch, settings, state, tmp_path):
+    import main
+    pp = Rec()
+    sv = _sv(settings, state, tmp_path, Rec(), pp, father_to="dadtoken", mother_to="momtoken")
+    sv.settings = dataclasses.replace(sv.settings, pushplus_copy_to_me=True)
+    monkeypatch.setattr(main, "get_services", lambda: sv)
+    for job in ("commute", "digest"):
+        monkeypatch.setitem(main.JOBS, job, dataclasses.replace(
+            main.JOBS[job], build=lambda sv_, record: Message("t", "md", headline="局部缓行 车程22分钟")))
+        main.run_job(job)
+    assert pp.calls == [("局部缓行 车程22分钟", ("dadtoken",)), ("爸·局部缓行 车程22分钟", ()),
+                        ("局部缓行 车程22分钟", ("dadtoken", "momtoken")), ("爸妈·局部缓行 车程22分钟", ())]
+    off = dataclasses.replace(sv.settings, pushplus_copy_to_me=False)
+    assert main.JOBS["commute"].pushplus_to(off) == ["dadtoken"]

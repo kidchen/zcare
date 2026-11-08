@@ -97,6 +97,8 @@ def build_user_content(text: str, name: str, now: datetime, assistant_name: str,
     """All per-request context lives here, after the static system prompt.
     ``extras`` (Day / Recent / Prefs) are only included when non-empty."""
     stamp = f"{now:%Y-%m-%d %H:%M} 星期{WEEKDAYS[now.weekday()]}"
+    if name in ("", "您"):  # no known name: don't let the model use "您" as one ("早上好，您！")
+        name = "无（不要称呼对方，直接说话）"
     extra = "".join(f", {k}={v}" for k, v in (extras or {}).items() if v)
     extra += f", Notes={'；'.join(notes)}" if notes else ""
     return (f"[Context: Time={stamp}, User={name}, Location={location}, Assistant={assistant_name}{extra}]\n"
@@ -143,7 +145,7 @@ class FamilyAssistant:
     def __init__(
         self,
         llm: LLMClient,
-        assistant_name: str = "小暖",
+        assistant_name: str = "小助理",
         clock: Callable[[], float] = time.monotonic,
     ):
         self._llm = llm

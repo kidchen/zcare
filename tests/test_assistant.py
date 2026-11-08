@@ -139,7 +139,7 @@ def test_system_prompt_is_static_and_context_goes_in_user_turn():
 
     from features.assistant import SYSTEM_PROMPT
     fake = ScriptedLLM(*[{"intent": "chat", "reply": "嗯"}] * 3)
-    a = FamilyAssistant(fake, assistant_name="小暖")
+    a = FamilyAssistant(fake, assistant_name="小助理")
     a.respond(MOM, "妈妈", "吃了吗", NOW)
     a.respond(DAD, "爸爸", "你好", NOW + timedelta(hours=5, minutes=17))
     a.respond(MOM, "妈妈", "在吗", NOW + timedelta(days=1))
@@ -147,10 +147,10 @@ def test_system_prompt_is_static_and_context_goes_in_user_turn():
     assert systems == {SYSTEM_PROMPT}  # byte-identical across users and times → cacheable
     assert all(call[0]["role"] == "system" for call in fake.calls)
     assert "JSON" in SYSTEM_PROMPT and "{" in SYSTEM_PROMPT  # json mode requirement + literal schema
-    for forbidden in ("妈妈，", "爸爸，", "2026", "星期", "小暖"):
+    for forbidden in ("妈妈，", "爸爸，", "2026", "星期", "小助理"):
         assert forbidden not in SYSTEM_PROMPT, forbidden
     user_turn = fake.calls[1][-1]["content"]
-    assert user_turn == ("[Context: Time=2026-10-13 15:47 星期二, User=爸爸, Location=呼和浩特, Assistant=小暖]\n"
+    assert user_turn == ("[Context: Time=2026-10-13 15:47 星期二, User=爸爸, Location=呼和浩特, Assistant=小助理]\n"
                          "User Query: 你好")
 
 

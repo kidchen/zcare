@@ -162,6 +162,9 @@ class Settings:
     log_level: str
     # --- Delivery: scheduled messages go to every channel listed; chat / on-demand replies stay in WeCom ---
     pushplus_token: str = ""  # pushplus.plus token (real-name verified account)
+    admin_name: str = ""  # how 小助理 addresses you (admin role, e.g. when testing ClawBot); empty = no name
+    pushplus_copy_to_me: bool = False  # also send the token owner (you) a copy of every scheduled message
+    clawbot_enabled: bool = True  # chat in normal WeChat via ClawBot (accounts: python main.py clawbot-login)
     delivery_channels: tuple[str, ...] = ("wecom",)
 
     def member(self, role: str) -> FamilyMember:
@@ -280,13 +283,16 @@ def load_settings() -> Settings:
         llm_fallback_model=_env("LLM_FALLBACK_MODEL"),
         llm_timeout_s=_env_float("LLM_TIMEOUT_SECONDS", 20.0),
         llm_max_per_hour=_env_int("LLM_MAX_MESSAGES_PER_HOUR", 30),
-        assistant_name=_env("ASSISTANT_NAME", "小暖"),
+        assistant_name=_env("ASSISTANT_NAME", "小助理"),
         public_base_url=_env("PUBLIC_BASE_URL").rstrip("/"),
         dry_run=dry_run,
         admin_token=_env("ADMIN_TOKEN"),
         state_file=state_file,
         log_level=_env("LOG_LEVEL", "INFO").upper(),
         pushplus_token=_env("PUSHPLUS_TOKEN"),
+        pushplus_copy_to_me=_env_bool("PUSHPLUS_COPY_TO_ME", False),
+        admin_name=_env("ADMIN_NAME"),
+        clawbot_enabled=_env_bool("CLAWBOT_ENABLED", True),
         delivery_channels=channels,
     )
     for role in settings.tv_recipients:
