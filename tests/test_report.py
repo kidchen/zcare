@@ -45,7 +45,7 @@ def test_report_summarizes_every_section():
     assert "新相关 11 篇，已提取 9 篇，失败批次 1；当前有效活动 3、提醒 2" in short
     assert "GLM：对话 2 次，文章提取 2 次（失败 1）" in short and "授权提醒 1 次（二维码已发送）" in short
     assert len(short.encode()) < 1500  # fits a WeCom text with the link
-    for part in ("07:30 爸爸早间路况 → 爸爸：✓", "09:00 妈妈出行推荐 → 妈妈：备用问候", "妈妈：3 次", "「这个太远了」→ 反馈",
+    for part in ("07:30 爸爸早间路况 → 爸爸：✓", "09:00 妈妈出行推荐 → 妈妈：备用问候", "妈妈：3 次", "反馈：「这个太远了」",
                  "⚠️ 紧急消息", "「有点胸闷」", "场馆「内蒙古体育馆」— 太远", "按需请求失败", "订阅源里最近的文章：64 篇",
                  "对话：2 次（成功 2，失败 0），输入 1420 / 输出 90 tokens，平均 1.4 秒", "清理旧文章：37 篇", "RuntimeError"):
         assert part in full, part
@@ -165,3 +165,50 @@ def test_extraction_stats_are_reported_on_warm_up(state):
     f.refresh(date(2026, 10, 13), report=True)
     assert len(stats) == 2 and stats[0]["new_relevant"] == 1 and stats[0]["processed"] == 1
     assert stats[1]["new_relevant"] == 0 and stats[1]["feed_articles"] == 1
+
+
+def test_conversations_show_message_reply_and_followup():
+    from features.report import conversation_lines
+    tz = ZoneInfo("Asia/Shanghai")
+    chats = [{"ts": T - 600, "type": "chat", "role": "mother", "intent": "outing", "channel": "clawbot",
+              "text": "大黑河那边有什么逛的", "reply": "好的，我帮您看看～"},
+             {"ts": T - 300, "type": "chat", "role": "father", "intent": "chat", "text": "早", "reply": "爸爸早上好！"}]
+    od = [{"ts": T - 590, "type": "on_demand", "role": "mother", "command": "outing", "ok": True, "sent": "大黑河附近：大黑河郊野公园等3处"}]
+    lines = conversation_lines(chats, od, lambda r: NAMES.get(r, r), tz)
+    text = "\n".join(lines)
+    assert "**妈妈**（1 条）" in text and "微信 · 出行/活动：「大黑河那边有什么逛的」" in text
+    assert "> 小助理：好的，我帮您看看～" in text and "> 📨 接着发了：大黑河附近：大黑河郊野公园等3处" in text
+    assert "**爸爸**（1 条）" in text and "> 小助理：爸爸早上好！" in text
+
+
+def test_daily_report_goes_via_pushplus_with_a_link(monkeypatch, tmp_path, settings, state):
+    import main
+    from features.detail import DetailStore
+
+    class Push:
+        sent = []
+
+        def send(self, title, html, to=()):
+            Push.sent.append((title, html, tuple(to)))
+
+    class WeCom:
+        texts = []
+
+        def send_text(self, users, text):
+            WeCom.texts.append(text)
+
+    act = ActivityLog(tmp_path / "a.jsonl", clock=lambda: T)
+    act.record("chat", role="mother", intent="weather", channel="clawbot", text="明天冷不冷", reply="明天最低-3°C，穿厚点～")
+    s = dataclasses.replace(settings, dry_run=False, admin_userid="me")
+    sv = main.Services(s, object(), WeCom(), state, details=DetailStore(tmp_path / "d", "http://srv"), activity=act,
+                       pushplus=Push())
+    sv.now = lambda: NOW
+    monkeypatch.setattr(main, "get_services", lambda: sv)
+    main.run_daily_report()
+    ((title, page, to),) = Push.sent
+    assert title.startswith("📊 zcare 日报") and to == () and "家人对话：妈妈 1 次" in page
+    assert 'href="http://srv/detail/' in page and "明天冷不冷" not in page      # conversations stay on our page
+    assert WeCom.texts == []                                                      # PushPlus worked → no WeCom
+    report_id = page.split("/detail/")[1].split('"')[0]
+    full = sv.details.load(report_id)["markdown"]
+    assert "「明天冷不冷」" in full and "小助理：明天最低-3°C，穿厚点～" in full

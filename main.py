@@ -11,6 +11,7 @@ and your parents would get duplicate messages.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import html
 import logging
 import re
@@ -70,6 +71,21 @@ from features.daytype import day_info
 from features.detail import DetailStore, render_page
 from features.digest import DigestBuilder, format_digest_message
 from features.events import EventFinder
+from features.feedback import (
+    ACK,
+    ROLE_CN,
+    TUNING_KEY,
+    AdminCommand,
+    FeedbackStore,
+    describe_change,
+    done_message,
+    item_line,
+    parse_admin_command,
+    parse_feedback,
+)
+from features.feedback import report_lines as feedback_report_lines
+from features.film import build_film_message
+from features.film import verified_query as verified_film_query
 from features.outing import build_outing_message
 from features.preferences import FEEDBACK_KEYWORDS, PreferenceStore
 from features.push import push_title, render_push_html
@@ -94,6 +110,7 @@ class Services:
     prefs: PreferenceStore | None = None  # tastes learned from chat feedback
     activity: ActivityLog | None = None  # data/activity.jsonl → daily admin report
     pushplus: PushPlusClient | None = None  # scheduled messages to normal WeChat (DELIVERY_CHANNELS)
+    feedback: FeedbackStore | None = None  # family feedback loop (features/feedback.py)
 
     def record(self, type_: str, **fields) -> None:
         if self.activity is not None:
@@ -129,7 +146,12 @@ def get_services() -> Services:
         events.on_stats = lambda **k: activity.record("extract", **k)
     pushplus = PushPlusClient(s.pushplus_token) if s.pushplus_token else None
     return Services(s, AmapClient(s.amap_key), wecom, state, posters, events, details, PreferenceStore(state),
-                    activity, pushplus)
+                    activity, pushplus, FeedbackStore(state))
+
+
+def tuned(sv: Services) -> Services:
+    """Services whose settings include the adjustments approved from feedback (news count, drama picks…)."""
+    return dataclasses.replace(sv, settings=sv.feedback.tuned(sv.settings)) if sv.feedback is not None else sv
 
 
 def role_of(s: Settings, userid: str) -> str:
@@ -313,7 +335,7 @@ def fallback_message(name: str, sv: Services) -> Message:
 def run_job(name: str, dry_run: bool | None = None) -> dict:
     if name not in JOBS:
         raise KeyError(name)
-    sv = get_services()
+    sv = tuned(get_services())
     dry = sv.settings.dry_run if dry_run is None else dry_run
     job = JOBS[name]
     try:
@@ -339,6 +361,9 @@ def run_job(name: str, dry_run: bool | None = None) -> dict:
             log.info("[dry-run] %s → %s\n%s", name, recipients, message.markdown)
         else:
             channels = deliver_scheduled(sv, name, job, message)
+            if sv.feedback is not None:
+                for role in job.roles(sv.settings):
+                    sv.feedback.remember_delivery(role, f"{JOB_NAMES.get(name, name)} · {message.headline or message.title}")
             sent = True
             log.info("sent %s to %s via %s", name, recipients, ",".join(channels))
             sv.record("sent", job=name, to=JOB_AUDIENCE.get(name, ""), ok=True, fallback=used_fallback,
@@ -482,19 +507,41 @@ def run_alarm_reminder() -> None:
 def build_report(sv: Services) -> tuple[str, str]:
     s = sv.settings
     names = {"father": s.father.display_name, "mother": s.mother.display_name, "admin": "你", "other": "其他成员"}
-    return build_daily_report(sv.activity.since(86400) if sv.activity else [], sv.now(), names)
+    short, full = build_daily_report(sv.activity.since(86400) if sv.activity else [], sv.now(), names)
+    if sv.feedback is not None:
+        fb_short, fb_md = feedback_report_lines(sv.feedback)
+        short, full = short + "\n" + fb_short, full + "\n\n" + "\n".join(fb_md)
+    return short, full
+
+
+CHAT_LOG_CHARS = 300  # how much of each message / reply the activity log keeps (8 days, on this server only)
 
 
 def run_daily_report() -> None:
-    """Daily snapshot to ADMIN_WECOM_USERID: short text + link to the full report page."""
+    """Daily snapshot to you via PushPlus (WeCom only if PushPlus is unavailable): the summary, plus a link to
+    the full report page on this server. Conversations stay on the page (random, expiring link), not in PushPlus,
+    which keeps message content on its servers for 30 days."""
     sv = get_services()
-    if not sv.settings.admin_userid:
+    if not (sv.pushplus or sv.settings.admin_userid):
         return
     try:
         short, full = build_report(sv)
         url = sv.details.publish_page("zcare 日报", full) if sv.details else None
-        text = short + (f"\n\n完整报告：{url}" if url else "\n\n" + full)
-        _send_text(sv, [sv.settings.admin_userid], text)
+        lines = short.splitlines()
+        sent = False
+        if sv.pushplus is not None and not sv.settings.dry_run:
+            body = "".join(f'<p style="font-size:19px;line-height:1.6;margin:8px 0">{html.escape(x)}</p>' for x in lines[1:])
+            if url:
+                body += (f'<a href="{html.escape(url, quote=True)}" style="display:block;margin:18px 0;padding:14px;'
+                         'border-radius:999px;background:#07C160;color:#fff;font-size:20px;font-weight:600;'
+                         'text-align:center;text-decoration:none">查看完整报告和对话记录 ›</a>')
+            try:
+                sv.pushplus.send(lines[0][:60], body)
+                sent = True
+            except Exception:  # noqa: BLE001
+                log.exception("daily report via PushPlus failed; falling back to WeCom")
+        if not sent and sv.settings.admin_userid:
+            _send_text(sv, [sv.settings.admin_userid], short + (f"\n\n完整报告：{url}" if url else "\n\n" + full))
         if sv.activity:
             sv.activity.prune()
         log.info("daily report sent")
@@ -512,11 +559,15 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
             continue  # empty cron = feature turned off (e.g. DIGEST_CRON=)
         trigger = CronTrigger.from_crontab(job.cron(settings), timezone=settings.timezone)
         scheduler.add_job(_scheduled_run, trigger, args=[name], id=name, name=name, replace_existing=True)
-    if settings.daily_report_cron and settings.admin_userid:
+    if settings.daily_report_cron and (settings.admin_userid or settings.pushplus_token):
         scheduler.add_job(run_daily_report, CronTrigger.from_crontab(settings.daily_report_cron, timezone=settings.timezone),
                           id="daily_report", name="daily_report", replace_existing=True)
     scheduler.add_job(run_backup, CronTrigger.from_crontab(BACKUP_CRON, timezone=settings.timezone),
                       id="backup", name="backup", replace_existing=True)
+    if settings.feedback_digest_cron.strip():
+        scheduler.add_job(run_feedback_digest, CronTrigger.from_crontab(settings.feedback_digest_cron,
+                                                                        timezone=settings.timezone),
+                          id="feedback_digest", name="feedback_digest", replace_existing=True)
     scheduler.add_job(run_alarms, "interval", seconds=ALARMS_CHECK_S, id="alarms", name="alarms",
                       replace_existing=True)
     scheduler.add_job(run_alarm_reminder, CronTrigger.from_crontab(ALARMS_REMIND_CRON, timezone=settings.timezone),
@@ -831,6 +882,7 @@ def _display_name(s: Settings, userid: str) -> str:
 
 def build_on_demand_message(
     sv: Services, command: Command, name: str, record: bool = False, place: str = "", role: str = "mother",
+    tv_query: str = "", tv_kind: str = "",
 ) -> Message | None:
     """The data message for an on-demand request (nothing sent).
 
@@ -848,6 +900,8 @@ def build_on_demand_message(
             sv.amap, sv.settings, sv.state, sv.now().date(), record=False, name=name, greeting="你好",
             events=sv.events, prefs=sv.prefs, remember=record,  # remember what we suggested → "这个太远了"
         )
+    if command is Command.TV and tv_query:  # 「周润发的电影」→ real Douban titles, not the weekly picks
+        return build_film_message(tv_query, tv_kind, name, app=sv.settings.tv_app_name)
     if command is Command.TV:
         return build_tv_message(sv.settings, sv.state, record=record, name=name, posters=sv.posters)
     if command is Command.NEWS:
@@ -860,19 +914,24 @@ def build_on_demand_message(
     return None
 
 
-def run_on_demand(command: Command, userid: str, chatter: Chatter | None = None, place: str = "") -> None:
+def run_on_demand(command: Command, userid: str, chatter: Chatter | None = None, place: str = "",
+                  tv_query: str = "", tv_kind: str = "") -> None:
     """Build the requested message and push it to the requester (runs after the HTTP reply)."""
-    sv = get_services()
+    sv = tuned(get_services())
     chatter = chatter or wecom_chatter(sv, userid)
     name = _role_name(sv.settings, chatter.role)
     try:
         message = build_on_demand_message(sv, command, name, record=not sv.settings.dry_run, place=place,
-                                          role=chatter.role)
+                                          role=chatter.role, tv_query=tv_query, tv_kind=tv_kind)
         if message is None:
             return
         chatter.send_message(message)
+        if sv.feedback is not None:
+            asked = INTENT_LABELS.get(command.value, command.value)
+            sv.feedback.remember_delivery(chatter.role, f"问「{asked}」· {message.headline or message.title}")
         log.info("on-demand %s sent to %s via %s", command.value, chatter.key, chatter.channel)
-        sv.record("on_demand", command=command.value, role=chatter.role, ok=True, channel=chatter.channel)
+        sv.record("on_demand", command=command.value, role=chatter.role, ok=True, channel=chatter.channel,
+                  sent=(message.headline or message.title)[:60])
     except Exception as exc:
         log.exception("on-demand %s for %s failed", command.value, chatter.key)
         sv.record("on_demand", command=command.value, role=chatter.role, ok=False, error=repr(exc)[:120],
@@ -919,8 +978,11 @@ def run_llm_chat(userid: str, text: str, chatter: Chatter | None = None) -> None
         result = _apply_feedback(sv.prefs, result, text,
                                  on_record=lambda fb: sv.record("feedback", role=chatter.role,
                                                                 target=fb.target, value=fb.value, reason=fb.reason))
+    if result.intent == "feedback" and sv.feedback is not None:
+        result = _capture_feedback(sv, chatter, result, text)
     sv.record("chat", role=chatter.role, intent=result.intent, source=result.source,
-              urgent=result.urgent, text=text[:24], channel=chatter.channel)
+              urgent=result.urgent, text=text[:CHAT_LOG_CHARS], reply=result.reply[:CHAT_LOG_CHARS],
+              channel=chatter.channel)
     try:
         chatter.send_text(result.reply)
     except Exception:  # noqa: BLE001 — still try the alert / job below
@@ -930,10 +992,30 @@ def run_llm_chat(userid: str, text: str, chatter: Chatter | None = None) -> None
     command = result.command
     if command is not None and (get_clawbot_bot() if chatter.channel == "clawbot" else get_bot()).try_start(
             chatter.key, command):
-        if chatter.channel == "wecom" and not result.place:
+        tv_query, tv_kind = _tv_query(chatter, result, text)
+        if chatter.channel == "wecom" and not result.place and not tv_query:
             run_on_demand(command, userid)
         else:
-            run_on_demand(command, userid, chatter, place=result.place)
+            run_on_demand(command, userid, chatter, place=result.place, tv_query=tv_query, tv_kind=tv_kind)
+
+
+TV_FOLLOWUP_S = 15 * 60
+_last_tv: dict[str, tuple[str, str, str, float]] = {}  # chatter → (their message, query, kind, ts)
+
+
+def _tv_query(chatter: Chatter, result, text: str) -> tuple[str, str]:
+    """The asked actor / title, verified in their words — or in their previous question (「电影名字给我」)."""
+    if result.intent != "tv":
+        return "", ""
+    prev_text, prev_q, prev_kind, at = _last_tv.get(chatter.key, ("", "", "", 0.0))
+    previous = prev_text if time.time() - at < TV_FOLLOWUP_S else ""
+    query = verified_film_query(result.tv_query, text, previous)
+    if not query and previous and prev_q and not result.tv_query and any(w in text for w in ("名字", "哪几部", "哪些", "片名")):
+        query = prev_q  # follow-up without the name: same question again
+    kind = result.tv_kind or ("movie" if "电影" in text else "tv" if "剧" in text else (prev_kind if query == prev_q else ""))
+    if query:
+        _last_tv[chatter.key] = (text, query, kind, time.time())
+    return query, kind
 
 
 def _alert_urgent(sv: Services, name: str, text: str) -> None:
@@ -949,6 +1031,99 @@ def _alert_urgent(sv: Services, name: str, text: str) -> None:
             sv.pushplus.send(f"紧急：{name}的消息", f"<p style=\"font-size:21px\">{html.escape(alert)}</p>")
         except Exception:  # noqa: BLE001
             log.exception("failed to send urgent alert via PushPlus")
+
+
+INTENT_LABELS = {"commute": "路况", "outing": "去哪儿", "tv": "电视剧", "news": "新闻", "weather": "天气"}
+
+
+def _capture_feedback(sv: Services, chatter: Chatter, result, text: str):
+    """Non-place feedback → the inbox (place preferences were already applied by _apply_feedback).
+    The reply is our fixed, honest acknowledgement. With FEEDBACK_AUTO_APPLY (default) a proposed "more / less"
+    adjustment is applied at once. Nothing pings you now: the daily PushPlus summary reports it all (async —
+    you're in another timezone)."""
+    from dataclasses import replace as dc_replace
+
+    kind, topic, adjust = parse_feedback(result.feedback, text)
+    if kind == "place":
+        return result
+    item = sv.feedback.add(chatter.role, text, kind, topic, adjust, sv.settings)
+    sv.record("feedback_item", role=chatter.role, kind=kind, topic=topic, id=item.id)
+    log.info("feedback #%d stored: %s/%s %s", item.id, kind, topic, item.proposal or "")
+    if chatter.role == "admin":
+        return dc_replace(result, reply=f"记下了（#{item.id}）。" + (f"建议：{describe_change(item.proposal)}，回复「同意 {item.id}」应用。"
+                                                                   if item.proposal else ""))
+    if item.proposal and sv.settings.feedback_auto_apply:
+        done = sv.feedback.apply(item)
+        return dc_replace(result, reply=f"好的，已经帮您调好了：{done.note}～")
+    return dc_replace(result, reply=ACK.get(kind, ACK["content"]))
+
+
+def run_feedback_digest() -> None:
+    """Daily PushPlus summary to you: what changed on its own, what still needs you. Skipped if nothing new."""
+    sv = get_services()
+    if sv.feedback is None:
+        return
+    try:
+        lines = sv.feedback.digest_lines()
+        if lines:
+            alarm_notify(sv, f"家人反馈日报：{lines[0]}", lines[1:])
+            sv.feedback.mark_digest_sent()
+    except Exception:  # noqa: BLE001
+        log.exception("feedback digest failed")
+
+
+def handle_admin_feedback(sv: Services, cmd: AdminCommand) -> str:
+    """Your commands: 反馈 / 同意 N / 改好了 N 说明 / 不改 N → the reply to you."""
+    from dataclasses import replace as dc_replace
+
+    store = sv.feedback
+    if cmd.action == "list":
+        items = store.open_items()
+        return ("待处理的反馈：\n" + "\n".join(item_line(i) for i in items[:15])) if items else "现在没有待处理的反馈～"
+    item = store.get(cmd.item_id)
+    if item is None:
+        return f"没有 #{cmd.item_id} 这条反馈"
+    if cmd.action == "approve":
+        if not item.proposal:
+            return f"#{item.id} 没有可以自动应用的调整；改好后回复「改好了 {item.id} 说明」"
+        done = store.apply(item)
+        return f"已应用 #{item.id}：{done.note}。要告诉{ROLE_CN.get(item.role, '')}的话，回复「改好了 {item.id}」"
+    if cmd.action == "dismiss":
+        if item.status == "applied" and item.proposal:  # undo an automatic adjustment
+            tuning = store.tuning()
+            tuning[item.proposal["knob"]] = int(item.proposal["from"])
+            sv.state.set(TUNING_KEY, tuning)
+        store.update(dc_replace(item, status="dismissed"))
+        return f"#{item.id} 已关闭（不通知家人）"
+    # fixed → tell the parent
+    done = dc_replace(item, status="fixed", note=cmd.note or item.note)
+    store.update(done)
+    if item.role in ("father", "mother"):
+        name = _role_name(sv.settings, item.role)
+        msg = done_message(done, name)
+        _tell_parent(sv, item.role, msg)
+        return f"#{item.id} 已完成，已告诉{name}：{msg}"
+    return f"#{item.id} 已完成"
+
+
+def _tell_parent(sv: Services, role: str, text: str) -> None:
+    """Best channel to reach a parent proactively: PushPlus (always there); ClawBot best effort."""
+    if sv.settings.dry_run:
+        log.info("[dry-run] tell %s: %s", role, text)
+        return
+    if sv.pushplus is not None:
+        to = sv.settings.member(role).pushplus_to
+        try:
+            sv.pushplus.send("你提的意见改好了", f'<p style="font-size:21px;line-height:1.7">{html.escape(text)}</p>',
+                             to=[to] if to else ())
+        except Exception:  # noqa: BLE001
+            log.exception("could not tell %s via PushPlus", role)
+    account = next((a for a in clawbot_store().all() if a.role == role), None)
+    if account is not None:
+        try:
+            ClawBotClient(account.bot_token, account.base_url).send_text(account.user_id, text)
+        except Exception as exc:  # noqa: BLE001 — proactive ClawBot sends need a recent chat
+            log.info("ClawBot proactive send to %s skipped: %s", role, exc)
 
 
 FEEDBACK_ACK = "好的，记下了！以后少给您推荐这类地方～"
@@ -1009,10 +1184,14 @@ def clawbot_chatter(sv: Services, account: ClawAccount, reply: Callable[[str], N
 def on_clawbot_message(account: ClawAccount, inbound: Inbound, reply: Callable[[str], None]) -> None:
     sv = get_services()
     chatter = clawbot_chatter(sv, account, reply)
+    if account.role == "admin" and sv.feedback is not None and (cmd := parse_admin_command(inbound.text)):
+        chatter.send_text(handle_admin_feedback(sv, cmd))
+        return
     msg = IncomingMessage("", chatter.key, int(time.time()), "text", inbound.text, inbound.message_id, "")
     reaction = get_clawbot_bot().handle(msg)
     if not reaction.chat and (reaction.command or reaction.admin_command or reaction.reply):
-        sv.record("chat", role=account.role, source="keyword", channel="clawbot", text=inbound.text[:24],
+        sv.record("chat", role=account.role, source="keyword", channel="clawbot", text=inbound.text[:CHAT_LOG_CHARS],
+                  reply=(reaction.reply or "")[:CHAT_LOG_CHARS],
                   intent=(reaction.command.value if reaction.command else
                           "admin" if reaction.admin_command else "help"))
     if reaction.reply:
@@ -1086,6 +1265,11 @@ async def wecom_receive(
         log.warning("WeCom callback rejected: %s", exc)
         raise HTTPException(403, "verification failed") from exc
 
+    s = get_settings()
+    if (msg.msg_type == "text" and s.admin_userid and msg.from_user == s.admin_userid
+            and (cmd := parse_admin_command(msg.content))):
+        submit_background(lambda: _send_text(get_services(), [msg.from_user], handle_admin_feedback(get_services(), cmd)))
+        return PlainTextResponse("")
     reaction = get_bot().handle(msg)
     if not reaction.chat and (reaction.command or reaction.admin_command or reaction.reply):
         # keyword mode / admin commands (the LLM path records itself in run_llm_chat)

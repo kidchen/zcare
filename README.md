@@ -140,11 +140,14 @@ Asking 「新闻」/「有啥新鲜事」 sends the current digest on demand (do
 
 ## Daily admin report
 
-Every day at `DAILY_REPORT_CRON` (default 21:00) `ADMIN_WECOM_USERID` gets a short WeCom text — scheduled
-messages sent / fallbacks / skips, each parent's chats by intent (⚠️ urgent highlighted), new articles and
-extraction results, GLM calls and failures, auth alerts, errors — plus a link to the full report page
-(chat log with short excerpts, recorded preferences, token totals and latency, cleanup). Source:
-`data/activity.jsonl` (append-only, survives restarts, kept 8 days). Preview: `python main.py report`.
+Every day at `DAILY_REPORT_CRON` (default 21:00) you get a **PushPlus** message (WeCom only if PushPlus is
+unavailable): scheduled messages sent / fallbacks / skips, each parent's chats by intent (⚠️ urgent highlighted),
+articles and extraction, GLM calls, feedback, auth alerts, errors — and a button to the full report page.
+
+The page has the **conversation log**: per person, every message (and the channel), 小助理's reply, and the data
+message sent after it ("📨 接着发了：大黑河附近：…"). Conversations stay on this server (activity log kept 8 days;
+the page behind a random, expiring link) instead of PushPlus, which keeps message content for 30 days.
+Preview: `python main.py report`.
 
 ## GLM usage
 
@@ -278,6 +281,24 @@ HTTPS only — a long-poll for new messages, replies with the message's `context
   If the zcare container is down/unhealthy or we-mp-rss isn't running for 2 checks in a row,
   `ADMIN_WECOM_USERID` gets one WeCom text; another when it recovers. It reads the WeCom settings from the
   server's `.env`. Check it: `systemctl list-timers zcare-watchdog.timer`, `journalctl -u zcare-watchdog`.
+
+## Feedback loop
+
+Mom and Dad give feedback in chat; 小助理 handles it without waiting for you (you're in another timezone):
+
+- **Places** (「这个太远了」「去过了」「不喜欢看展览」) → preferences, applied at once (as before).
+- **More / less** (「新闻太多了」「推荐的剧太少了」「走路太远」) → a bounded adjustment is applied at once —
+  news items 3–8, drama picks 2–5, walking limit 300–1500 m — and the parent hears 「已经帮您调好了：…」.
+- **Content / bug / wish** (「路况不准」「链接打不开」「能不能告诉我菜价」) → stored with what they were reacting to
+  (the last message they received), acknowledged honestly (「记下了，改好了再告诉您」).
+- **Your summary:** one PushPlus message at `FEEDBACK_DIGEST_CRON` (21:05) — what changed on its own, what needs a
+  code/content fix, praise. Skipped on days without feedback. Also in the 21:00 report.
+- **Your commands** (chat with 小助理 as admin, ClawBot or WeCom): 「反馈」 list open items · 「改好了 N 说明」 close and
+  tell the parent via PushPlus (「您 11月2日 说的…孩子已经改好了」) · 「不改 N」 close quietly — also undoes an
+  automatic adjustment · 「同意 N」 apply a proposal (only needed with `FEEDBACK_AUTO_APPLY=false`).
+
+GLM tags the feedback in the same call that answers the message (no extra calls); code validates kind, topic and
+knob, and computes the new value within bounds.
 
 ## Alarms
 

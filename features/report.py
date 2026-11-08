@@ -19,6 +19,32 @@ def _hm(ts: float, tz: ZoneInfo) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
 
 
+CHANNEL_SHORT = {"clawbot": "微信", "wecom": "企业微信"}
+CONVERSATION_MAX = 40
+
+
+def conversation_lines(chats: list[dict[str, Any]], on_demand: list[dict[str, Any]], who, tz: ZoneInfo) -> list[str]:
+    """Each person's conversations: what they said, what 小助理 answered, and the data message that followed."""
+    out = ["**💬 对话记录**"]
+    roles = list(dict.fromkeys(e.get("role") for e in chats))
+    for role in roles:
+        mine = [e for e in chats if e.get("role") == role][-CONVERSATION_MAX:]
+        followups = [e for e in on_demand if e.get("role") == role]
+        out += ["", f"**{who(role)}**（{len(mine)} 条）"]
+        for e in mine:
+            tag = INTENT_CN.get(e.get("intent"), e.get("intent"))
+            via = CHANNEL_SHORT.get(e.get("channel", "wecom"), "")
+            flags = ("（离线兜底）" if e.get("source") == "fallback" else "") + ("⚠️紧急 " if e.get("urgent") else "")
+            out.append(f"- {_hm(e['ts'], tz)} · {via} · {tag}：{flags}「{e.get('text', '')}」")
+            if e.get("reply"):
+                out.append(f"> 小助理：{e['reply']}")
+            sent = next((f for f in followups if 0 <= f["ts"] - e["ts"] < 180), None)
+            if sent is not None:
+                out.append(f"> 📨 接着发了：{sent.get('sent', '')}" if sent.get("ok")
+                           else f"> ❗ 想发「{INTENT_CN.get(sent.get('command'), sent.get('command'))}」但失败了")
+    return out
+
+
 def build_daily_report(entries: list[dict[str, Any]], now: datetime, names: dict[str, str]) -> tuple[str, str]:
     """→ (short text for WeCom, full markdown for the detail page). ``names``: role → display name."""
     tz = now.tzinfo or ZoneInfo("Asia/Shanghai")
@@ -100,9 +126,7 @@ def build_daily_report(entries: list[dict[str, Any]], now: datetime, names: dict
     if per_user:
         for role, counts in per_user.items():
             md.append(f"- {who(role)}：{sum(counts.values())} 次（" + "、".join(f"{k}{v}" for k, v in counts.most_common()) + "）")
-        md += ["", "**对话明细**"]
-        md += [f"- {_hm(e['ts'], tz)} {who(e.get('role'))}「{e.get('text', '')}」→ {INTENT_CN.get(e.get('intent'), e.get('intent'))}"
-               + ("（离线兜底）" if e.get("source") == "fallback" else "") for e in chats[-30:]]
+        md += ["", *conversation_lines(chats, by["on_demand"], who, tz)]
     else:
         md.append("- 无")
     if urgent:

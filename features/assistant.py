@@ -67,7 +67,7 @@ outing：呼和浩特本地近期活动和去处——剧场演出（乌兰恰�
 tv：好看的电视剧——正在热播的高分新剧（现代、悬疑、家庭等）和口碑经典（历史正剧、年代剧、军旅等，如《大明王朝1566》《父母爱情》），在电视上的「奇异果TV」看
 chat：问候、闲聊、倾诉、生活常识
 urgent：身体严重不适（胸闷、胸痛、心慌、喘不上气、头晕、摔倒等）、人身安全问题、疑似诈骗（陌生人要转账、要验证码、冒充公检法/客服/亲友借钱）
-feedback：对推荐过的地方或活动表达喜好，如「这个太远了」「我们不喜欢看展览」「这个上周去过了」「这种演出挺好」
+feedback：对你发的内容或对你本身的意见：地点喜好（「这个太远了」「这个上周去过了」「不喜欢看展览」），内容（「新闻太多了」「路况不准」「这个剧不好看」），故障（「链接打不开」「今天没收到」），心愿（「能不能告诉我菜价」），夸奖（「这个剧真好看」）
 </intents>
 
 <rules>
@@ -78,8 +78,9 @@ feedback：对推荐过的地方或活动表达喜好，如「这个太远了」
 5. urgent（身体）：一律按严重情况处理，不要建议先休息观察。两三句短话，第一句就让对方马上拨打120，如「（称呼），请马上拨打 120！先坐下别走动，把门打开，我已经通知孩子了。」
 6. urgent（诈骗）：和身体不适是两回事，不提 120。如「（称呼），先别转账，也别把验证码告诉任何人！先给孩子打个电话问清楚，我也已经通知孩子了。」你不是孩子，不要说「给我打电话」。
 7. 被问你是谁：说你是孩子设置的小助手，名字是 Context 里的 Assistant。
+8a. tv：如果对方问的是具体的演员、导演或片名（如「周润发的电影」「《父母爱情》好看吗」），在 tv_query 写这个人名或片名，照抄对方的原话；tv_kind 写 movie（电影）或 tv（电视剧），没说就不写。没有具体的人名片名就不加。
 8. outing：如果对方提到了具体地点或区域（如「大黑河那边」「大召附近」），在 place 字段写这个地点，照抄对方的原话。
-9. feedback：温暖地确认，不要争辩。嫌远、去过、不喜欢时说「好的，记下了，以后少给您推荐这类」；喜欢时说「好的，记下了，以后多给您找这样的」。feedback 字段里 reason 必填：too_far（太远）、visited（去过了）、not_interested（不喜欢）、like（喜欢）；value 写对方提到的场馆或类别，没提就留空。
+9. feedback：温暖地确认，不要争辩。feedback 字段：kind 必填（place 地点喜好、content 内容、bug 故障、wish 心愿、praise 夸奖）；topic 写关于什么（traffic、outing、news、tv、weather、chat、other）。kind 为 place 时 reason 必填：too_far（太远）、visited（去过了）、not_interested（不喜欢）、like（喜欢），value 写提到的场馆或类别，没提就留空；嫌远、去过、不喜欢时说「好的，记下了，以后少给您推荐这类」，喜欢时说「好的，记下了，以后多给您找这样的」。kind 为 content 且是嫌多嫌少时，可加 adjust：knob 为 digest_items（新闻条数）、tv_picks（推荐几部剧）、walk_limit（路线步行距离），direction 为 more 或 less。
 10. Context 里如有 Notes，是今天已核实的本地提醒（降温、供暖、道路封闭等）。和对方的话相关时可以顺带提一句；不相关就不提。绝不编造 Notes 以外的新闻。
 </rules>
 
@@ -87,8 +88,10 @@ feedback：对推荐过的地方或活动表达喜好，如「这个太远了」
 只输出一个 JSON 对象，不要任何其他内容：
 {"intent": "traffic|weather|news|outing|tv|chat|urgent|feedback", "reply": "给对方的回复"}
 intent 为 outing 且提到了地点时再加：{"intent": "outing", "reply": "…", "place": "对方说的地点"}
+intent 为 tv 且问了具体演员、导演或片名时再加：{"intent": "tv", "reply": "…", "tv_query": "人名或片名", "tv_kind": "movie|tv"}
 只有 intent 为 feedback 时再加：
-{"intent": "feedback", "reply": "…", "feedback": {"reason": "too_far|visited|not_interested|like", "value": "提到的场馆或类别，可为空"}}
+{"intent": "feedback", "reply": "…", "feedback": {"kind": "place|content|bug|wish|praise", "topic": "traffic|outing|news|tv|weather|chat|other", "reason": "kind 为 place 时：too_far|visited|not_interested|like", "value": "提到的场馆或类别，可为空", "adjust": {"knob": "digest_items|tv_picks|walk_limit", "direction": "more|less"}}}
+adjust 只在嫌多嫌少时才加。
 </output>"""
 
 LOCATION = "呼和浩特"
@@ -116,6 +119,8 @@ class AssistantResult:
     source: str  # "llm" | "fallback"
     feedback: dict | None = None  # raw feedback object (validated by PreferenceStore.resolve)
     place: str = ""  # outing: the place they named ("大黑河"), verified to be in their message
+    tv_query: str = ""  # tv: the actor / director / title they asked about (raw; verified in main with history)
+    tv_kind: str = ""  # tv: movie | tv
 
     @property
     def command(self) -> Command | None:
@@ -229,4 +234,7 @@ class FamilyAssistant:
             log.warning("keyword safety net flagged urgent message (LLM said %s)", intent)
         feedback = data.get("feedback") if intent == "feedback" and isinstance(data.get("feedback"), dict) else None
         place = verified_place(data.get("place"), text) if intent == "outing" else ""
-        return AssistantResult(intent, reply, urgent, "llm", feedback, place)
+        tv_query = str(data.get("tv_query") or "").strip() if intent == "tv" else ""
+        tv_kind = str(data.get("tv_kind") or "").strip().lower() if intent == "tv" else ""
+        return AssistantResult(intent, reply, urgent, "llm", feedback, place, tv_query[:40],
+                               tv_kind if tv_kind in ("movie", "tv") else "")
